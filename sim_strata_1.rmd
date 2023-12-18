@@ -1,0 +1,140 @@
+---
+title: "simulation to study strategies to handle small strata"
+author: "Wei Zou"
+date: "`r Sys.time()`"
+output: pdf_document
+---
+
+code is modified from C:/Users/zouw2/aPDL1/impower010/natera/programs/sim_collapsibility4_test_strata
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+
+
+
+library(knitr)
+
+library(ggplot2)
+
+ source('~/R/lib_2020/data_functions.r')
+source('~/R/lib_2020/output_functions.r')
+
+spec <- list(home  = '~/projects/stratification' )
+
+```
+
+ 
+
+```{r send jobs, eval=F}
+
+# this chuck is supposed to be run separately
+
+# run this first: #  ml load R
+
+prep_cmd <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$dup, ' ', s$hr,' ', s$med,' ', s$readoutTime,' ',s$run_name, "' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+
+M <- 100
+
+spec <- list(home  = '~/projects/stratification', run_name =  '1F_scen1',
+             seed.base= 27518, n = '60,60',  dup = '20', hr = '0.8,0.8', med = '27.7,17.2', readoutTime= '50', run_code = 'strat1.r' , total_run=M)
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+
+spec$n <- '12,108' ; spec$run_name <- '1F_scen2'
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+spec$n <- '60,60'; spec$med <- c('27.7,11'); spec$run_name <- '1F_scen3'; spec$readoutTime <- 40
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+spec$n <- '12,108'; spec$med <- c('27.7,11'); spec$run_name <- '1F_scen4'
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+```
+
+
+# prevalence 0.5 , prognostic HR .63
+ 
+```{r, warning=FALSE }
+
+ r1 <- readFolder.rdata( paste(spec$home,'reports/1F_scen1'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r1[, c('n','nevent', 'p_s','delta_p','O-E_M2','O-E_M1')]), digits=3)
+
+  
+```
+
+# prevalence 0.1 , prognostic HR .63
+
+```{r, warning=FALSE }
+
+ 
+  
+r2 <-   readFolder.rdata( paste(spec$home,'reports/1F_scen2'  , sep = '/'), objName = 'r1')
+ 
+knitr::kable( summarizeMatrix(r2[, c('n','nevent','p_s','delta_p','O-E_M2','O-E_M1')]), digits = 3)
+ 
+  
+``` 
+ 
+ 
+ 
+# prevalence 0.5 , prognostic HR .4
+ 
+```{r, warning=FALSE}
+
+ r1 <-   readFolder.rdata( paste(spec$home,'reports/1F_scen3'  , sep = '/'), objName = 'r1')
+
+ 
+knitr::kable( summarizeMatrix(r1[, c('n','nevent', 'p_s','delta_p','O-E_M2','O-E_M1')]), digits=3)
+
+  
+```
+
+# prevalence 0.1 , prognostic HR .4
+
+```{r, warning=FALSE}
+
+r2 <-   readFolder.rdata( paste(spec$home,'reports/1F_scen4'  , sep = '/'), objName = 'r1')
+ 
+knitr::kable( summarizeMatrix(r2[, c('n','nevent','p_s','delta_p','O-E_M2','O-E_M1')]), digits = 3)
+ 
+  
+``` 

@@ -1,0 +1,109 @@
+---
+title: "simulate multiple prognostic factors"
+author: "wei zou"
+date: "`r Sys.time()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+```
+
+# 1 factor cases
+
+```{r, echo=F}
+
+x1 <-  rexp(8000, rate=log(2)/5 * 0.7^0.2    ) 
+x2 <-  rexp(2000, rate=log(2)/5 * 0.7^(-0.8) ) 
+
+
+plot(density(c(x1,x2)), col='black')
+lines(density(rexp(10000, rate=log(2)/5)), col='red')
+legend('topright', lty=1, legend = c('mixed','standard exp'), col=c('black','red'))
+
+```
+
+median of the positive group with 0.2 prevalence is `r median(x1)` ; median of the negative group with 0.8 prevalence is `r median(x2)`. The hr ratio is `r median(x2)/median(x1)` and the overall median is `r median(c(x1,x2))`
+
+```{r, echo=F}
+
+
+constructMedians <- function( bigN = 1e6, overallMed = 5, freq=c(M1=0.45, M2=0.2), hr = c(0.7, 0.4), check_medians =F) {
+  # this function tries to construct subgroup hazard so that the hr 
+
+f1 <- as.matrix( expand.grid(lapply(freq, function(x) c(x, 1-x))) ) # subgroup frequencies
+f1.names <- NULL
+if(!is.null(names(freq))) {
+  f1.name <-   expand.grid(lapply(names(freq), function(x) c(paste(x,'+', sep=''), paste(x,'-', sep=''))), stringsAsFactors = F  )   # subgroup frequencies
+  colnames(f1.name) <- names(freq)
+   
+}  
+f2 <- exp( rowSums(log(f1)) )
+stopifnot(abs( sum(f2)  - 1) < 1e-5)
+c1 <- as.matrix( expand.grid(lapply(freq, function(x) c(x, x-1))) ) # coefficients
+r1 <- log(2)/ overallMed * exp( c1 %*% matrix(log(hr), ncol =1) ) # rate of exponential distribution
+
+stopifnot(length(f2) == length(r1))
+
+s1 <- lapply(1:length(f2), function(i)  rexp(round(bigN * f2[i], 0), rate=r1[i]))
+
+#names(s1) <- apply(f1, 1, paste, collapse=',')
+
+
+r2 <- r1 * median(unlist(s1)) / overallMed
+
+
+
+s1 <- lapply(1:length(f2), function(i)  rexp(round(bigN * f2[i], 0), rate=r2[i]))
+
+if(!is.null(f1.name)) {
+  f1.name$rate <- r2
+  f1.name$sim_med <- sapply(s1, median)
+  
+  if(check_medians) {
+    
+    plot(density(unlist(s1)), col='black', main='overall distribution from simulation')
+lines(density(rexp(10000, rate=log(2)/overallMed)), col='red')
+legend('topright', lty=1, legend = c('mixed sim','standard exp'), col=c('black','red'))
+    
+    for( marker in names(freq)){
+      print(marker)
+      # individual groups: not done
+       for ( j in grep(paste(marker,'+', sep=''), as.character(f1.name[[marker]]), fixed = T )) {
+         
+         cond1 <- paste(f1.name[j, setdiff(names(freq), marker  ),drop=T], collapse = ',')
+         print(paste('conditional on', cond1))
+         k <- which( apply(f1.name[ , setdiff(names(freq), marker  ),drop=F], 1, paste, collapse = ',') == cond1)
+         temp <- sapply(k, function(k1) {if(k1 != j) print(f1.name[j,'rate'] / f1.name[k1,'rate'])})
+       }
+      
+      # collapse other groups
+      print(paste( 'marginal hr',
+      
+      median(do.call(c, s1[which(f1.name[[marker]] %in% paste(marker,'-',sep=''))])) / 
+      median(do.call(c, s1[which(f1.name[[marker]] %in% paste(marker,'+',sep=''))]))  
+      ) )
+    }
+  }
+}  
+
+# median(s1[[2]])/median(s1[[1]])
+# median(s1[[4]])/median(s1[[3]])
+# 
+# median(c(s1[[2]], s1[[4]]) )/median(c(s1[[1]], s1[[3]]))
+# median(c(s1[[4]], s1[[3]])) /median(c(s1[[2]], s1[[1]]) )
+# 
+# median(s1[[3]])/median(s1[[1]])
+# median(s1[[4]])/median(s1[[2]])
+
+
+invisible(  c(overallM = median(unlist(s1)), rate=r2, freq= f2) )
+}          
+  
+constructMedians( bigN = 1e6, overallMed = 5, freq=c(M1=0.45, M2=0.2), hr = c(0.7, 0.4), check_medians =T)
+
+
+constructMedians( bigN = 1e6, overallMed = 10, freq=c(M1=0.45, M2=0.2, M3=0.3), hr = c(0.7, 0.55, 0.4), check_medians =T)
+
+```

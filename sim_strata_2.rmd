@@ -16,7 +16,7 @@ knitr::opts_chunk$set(echo = F)
 
 
 library(knitr)
-
+library(reshape2)
 library(ggplot2)
 
  source('~/R/lib_2020/data_functions.r')
@@ -33,11 +33,13 @@ med <- log(2) / cm$rate
 
 
 
+M <- 100  
+
 ```
 
  
 
-```{r send jobs, eval=F}
+```{r simple sim, eval=F}
 
 # this chuck is supposed to be run separately
 
@@ -67,8 +69,6 @@ R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$du
 }
 
 
-M <- 100  
-
 spec <- list(home  = '~/projects/stratification', run_name =  'imp150_sim1',
              seed.base= 27518, 
              n = paste(n, collapse=','),  dup = '20', 
@@ -83,10 +83,26 @@ for (j in seq(1, spec$total_run , by= 1)) {
 }
 
  
+
 ```
 
 
- 
+```{r, echo=F}
+
+summarizeMatrix2 <- function(ds3, vars=colnames(ds3)) {
+    stopifnot(is.matrix(ds3) || is.data.frame(ds3))
+    stopifnot(all(vars %in% colnames(ds3)))
+     
+    do.call(rbind, lapply(vars, function(i) {
+        data.frame(var = i, 
+                   n=sum(!is.na(ds3[, i])), 
+                   mean=mean(ds3[, i], na.rm=T), sd=sd(ds3[, i], na.rm=T), 
+                   matrix( quantile(ds3[, i], probs = c(0.01, 0.05, 0.1, 0.25, 0.5), na.rm=T, type=2 ), nrow=1, dimnames=list('', c('1%', '5%','10%','25%','50%') )), check.names = F)}
+                          ))
+}
+
+```
+# simulate imp150 data 
  
 ```{r, warning=FALSE }
 
@@ -94,11 +110,17 @@ for (j in seq(1, spec$total_run , by= 1)) {
 
 knitr::kable( summarizeMatrix(r1[, c('n','nevent', 'p_s','delta_p')]), digits=3)
 
+
+q1 <- summarizeMatrix2(r1[,   grep('O-E_M', colnames(r1), value=T) ])
+knitr::kable( q1, digits=3)
+
+ggplot(melt(q1[, setdiff(colnames(q1), c('sd','n'))]), aes(x=var, y =value, group=variable))+ geom_line(aes(col=variable)) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + xlab('O-E from each stratum') + ylab('quantile')
+
 minOE <- apply( r1[, grep('O-E_M', colnames(r1), value=T)], 1, min)
 
-plot(density( minOE ))
+plot(density( minOE), main=paste('prob of seeing O-E < -4.396:', round(mean(minOE < -4.396),2)) , xlab='minimal O-E value across 8 strata')
 abline(v=-4.396)  
-mean(minOE < -4.396)
+
 
 multiDensity(r1[, grep('O-E_M', colnames(r1), value=T)], legPos='topright')
 
@@ -107,4 +129,167 @@ out1 <- data.frame(n, med, colMeans(r1[, grep('O-E_M', colnames(r1), value=T)]))
 knitr::kable(out1, col.names=c('subgroup size', 'outcome medians','mean O-E'), digits=1, caption ='parameters derived from imp150, used in simulation')
 
 plot(out1[, 1], out1[, 3], xlab='subgroup size', ylab='mean O-E')
+```
+
+# requiring 10 events per stratum
+
+
+## collapse small groups
+
+```{r min event 10, eval=F}
+
+spec <- list(home  = '~/projects/stratification', run_name =  'imp150_sim2',
+             seed.base= 27518, 
+             n = paste(n, collapse=','),  dup = '20', 
+             hr = paste(rep(0.8, length(n)), collapse=','), 
+             med = paste(round(med,1), collapse=','), readoutTime= '53.5', run_code = 'strat3.r' , total_run=M, minE=10)
+
+
+prep_cmd2 <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$dup, ' ', s$hr,' ', s$med,' ', s$readoutTime,' ',s$run_name, ' ', s$minE, " collapseGroup' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd2(j)))
+}
+
+```
+
+
+ 
+```{r, warning=FALSE }
+
+ r2 <- readFolder.rdata( paste(spec$home,'reports/imp150_sim2'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r2[, c('n','nevent', 'p_s','p_c','n_strata_c','delta_p', 'delta_p2')]), digits=3)
+
+```
+
+## remove the smallest stratum
+
+```{r, eval=F}
+
+spec <- list(home  = '~/projects/stratification', run_name =  'imp150_sim2b',
+             seed.base= 27518, 
+             n = paste(n, collapse=','),  dup = '20', 
+             hr = paste(rep(0.8, length(n)), collapse=','), 
+             med = paste(round(med,1), collapse=','), readoutTime= '53.5', run_code = 'strat3.r' , total_run=M, minE=10)
+
+
+prep_cmd2 <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$dup, ' ', s$hr,' ', s$med,' ', s$readoutTime,' ',s$run_name, ' ', s$minE, " removeStratum' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd2(j)))
+}
+
+```
+
+
+ 
+```{r, warning=FALSE }
+
+ r2 <- readFolder.rdata( paste(spec$home,'reports/imp150_sim2b'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r2[, c('n','nevent', 'p_s','p_c','n_strata_c','delta_p', 'delta_p2')]), digits=3)
+
+```
+
+
+# requiring 30 events per stratum
+
+```{r min event 30, eval=F}
+
+spec <- list(home  = '~/projects/stratification', run_name =  'imp150_sim3',
+             seed.base= 27518, 
+             n = paste(n, collapse=','),  dup = '20', 
+             hr = paste(rep(0.8, length(n)), collapse=','), 
+             med = paste(round(med,1), collapse=','), readoutTime= '53.5', run_code = 'strat3.r' , total_run=M, minE=30)
+
+
+prep_cmd2 <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$dup, ' ', s$hr,' ', s$med,' ', s$readoutTime,' ',s$run_name, ' ', s$minE, " collapseGroup' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd2(j)))
+}
+
+```
+
+
+ 
+```{r, warning=FALSE }
+
+ r3 <- readFolder.rdata( paste(spec$home,'reports/imp150_sim3'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r3[, c('n','nevent', 'p_s','p_c','n_strata_c','delta_p', 'delta_p2')]), digits=3)
+
 ```

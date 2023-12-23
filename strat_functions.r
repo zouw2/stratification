@@ -1,3 +1,5 @@
+source('~/R/lib_2020/rpact_functions.r')
+
 sim_surv1 <- function(n_total, readoutTime,  m_b=10, hr=trt_hr, group_text=''){
   # Create a data frame with the subject IDs and treatment covariate
   cov <- data.frame(id = 1:n_total,
@@ -136,6 +138,7 @@ check_para <- function(p) {
   stopifnot(all(sapply(p$n, function(x) abs(as.integer(x) - x) < 1e-6 && x%%2 == 0 && x >= 2)))
   stopifnot(length(p$n) == length(p$hr))
   stopifnot(length(p$n) == length(p$med))
+  if(!is.null(p$nEvent)) stopifnot(sum(p$n) >= p$nEvent)
 }
 
 
@@ -260,21 +263,73 @@ sim3 <- function( p  , time , maxPms = 10, rampUpTime,epr_sim=.8, estimateProgno
 }
 
 
-sim3b <- function( p  , time    ) {
-  # use simsurv (instead of rpact) to generate survival data  
+sim3b <- function( p     ) {
+  # this function no longer depends on an external custom function. 
+  # use simsurv (instead of rpact) to generate survival data
+  # try to control the number of event in each simulated  data
+ stopifnot(p$dup == 1)
+   # Simulate the event times
+  j <- 0;
+  ds1 <- NULL
+  readoutTime <- round( -log(1 - p$nEvent / sum(p$n)) / (log(2)/ min(p$med)), 1) # exponential distribution SDF
+
+  while(j <= 10 && (is.null(ds1) || ( (!is.null(ds1)) && sum(ds1[,'event']) < pL$nEvent))) {
  
-  ds1 <- do.call(rbind, lapply(1:length(p$n), function(i) {
-    	ds1a <-  sim_surv1 (n_total = p$n[i] * p$dup, readoutTime =time,  m_b=p$med[i], hr=p$hr[i], group_text=paste('M',i, sep=''))
-    	   
-    	  ds1a$dup <- NA
-    	  for (a in unique(ds1a$treatmentGroup)) {
-		        ds1a[ ds1a$treatmentGroup == a,'dup'] <- sample( rep(1:p$dup, p$n[i]/2) )
-		
-	      } # enforce the stratified randomization
-    	  
-    	  ds1a
-    }) )
+    if(j > 0) {
+       print(paste('iteration', j  , 'with read out time at', readoutTime ))
+    }
+    
+    ds1 <- do.call(rbind, lapply(1:length(p$n), function(i) {
+      
+    # Create a data frame with the subject IDs and treatment covariate
+        cov <- data.frame(id = 1:p$n[i],
+                          treatmentGroup = 0)
+        cov$treatmentGroup[sample(p$n[i], size = p$n[i]/2)] <- 1   
+
+      dat  <- simsurv(dist= 'exponential', lambdas = log(2)/p$med[i], 
+                   betas = c(treatmentGroup = log( p$hr[i])), 
+                   x = cov, 
+                   maxt = readoutTime) 
+      
+      # rename variables
+      dat$accrualTime <- 0  # all patients were enrolled instantaneously
+      dat$observationTime <- readoutTime
+      dat$survivalTime <- dat$eventtime
+      dat$dropoutTime <-  readoutTime * 2 # just make the dropout far away
+        colnames(dat) <- gsub('status','event', colnames(dat))
+  
+        dat$grp <- paste('M',i, sep='')
+    # Merge the simulated event times onto covariate data frame
+  dat <- merge(cov, dat)
+    dat$treatmentGroup <- dat$treatmentGroup + 1 # 1 for control and 2 for active; which is opposite to rpact
+      
+      
    
+    dat
+  }))
+    
+    j  <- j+1
+    readoutTime  <- readoutTime + j * min(p$med)
+     
+    
+    
+  }
+  
+   
+  # cut event
+  if(sum(ds1[,'event']) > p$nEvent){
+       ds1 <- cut2event(ds1, p$nEvent) 
+  }else{
+    ds1$'timeUnderObservation' <- ds1$eventtime
+  }
+   
+  ds1$arm <- factor(ds1$treatmentGroup, levels=c(1, 2), labels = c('B','A'))
+  
+  colnames(ds1) <- gsub('timeUnderObservation','tte', colnames(ds1))
+
+   
+ 
+    ds1$dup <- 1 
   
 	stopifnot(nrow(ds1) == with(p, sum(n) *dup))
 	c1 <- with(ds1, table(treatmentGroup,  dup, grp, useNA = 'ifany'))
@@ -282,6 +337,9 @@ sim3b <- function( p  , time    ) {
    stopifnot(all(as.vector(c1[,, i]) == p$n[i] /2  ))
 	}
 	 
+	
+
+	
 	res0 <- t ( sapply(split(ds1, paste(ds1$dup)), ana1, form= 'Surv(tte, event) ~ arm') )
 	res1 <- t ( sapply(split(ds1, paste(ds1$dup, ds1$grp)), ana1, form= 'Surv(tte, event) ~ arm') )
 	res1 <- as.data.frame(res1)
@@ -291,6 +349,14 @@ sim3b <- function( p  , time    ) {
 	colnames(res1) <- make.names(colnames(res1))
 	res1b <-  dcast(res1, dup ~ grp, value.var='O.E')
 	colnames(res1b) <- paste('O-E', colnames(res1b),sep ='_')
+	
+	res_p <- t ( sapply(split(ds1, paste(ds1$dup, ds1$arm)), function(d, form= 'Surv(tte, event) ~ grp') {
+	  s1 <- summary( survdiff( as.formula(form)  , data =   d) )
+	  hr <- s1[1, 'qad_hr']
+	}))
+	
+	colnames(res_p) <- paste('prog_hr', colnames(res_p),sep='_')
+	
 	res_s <- t ( sapply(split(ds1, paste(ds1$dup)), ana1, form='Surv(tte, event) ~ arm + strata(grp)') )
 	
 	colnames(res_s) <- paste(colnames(res_s), 's', sep = '_')
@@ -298,7 +364,8 @@ sim3b <- function( p  , time    ) {
 	
  stopifnot(all(row.names(res0) == row.names(res_s)))
  stopifnot(all(row.names(res0) == res1b[,'O-E_dup']))
-	cbind(res0[, c('n','nevent','p','qad_hr')], res_s[, c('p_s','qad_hr_s')], delta_p = res0[,'p'] - res_s[,'p_s'], res1b)
+	cbind(res0[, c('n','nevent','p','qad_hr'), drop=F],
+	      res_s[, c('p_s','qad_hr_s'), drop=F], delta_p = res0[,'p'] - res_s[,'p_s'], res1b, res_p)
 
 }
 

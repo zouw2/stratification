@@ -324,7 +324,7 @@ sim3b <- function( p     ) {
   }
    
   ds1$arm <- factor(ds1$treatmentGroup, levels=c(1, 2), labels = c('B','A'))
-  
+  ds1$grp <- factor(ds1$grp, levels=paste('M', 1:length(p$n), sep=''))
   colnames(ds1) <- gsub('timeUnderObservation','tte', colnames(ds1))
 
    
@@ -350,12 +350,17 @@ sim3b <- function( p     ) {
 	res1b <-  dcast(res1, dup ~ grp, value.var='O.E')
 	colnames(res1b) <- paste('O-E', colnames(res1b),sep ='_')
 	
+	if(length(unique(ds1$grp)) > 1){
+	
 	res_p <- t ( sapply(split(ds1, paste(ds1$dup, ds1$arm)), function(d, form= 'Surv(tte, event) ~ grp') {
 	  s1 <- summary( survdiff( as.formula(form)  , data =   d) )
 	  hr <- s1[1, 'qad_hr']
 	}))
 	
 	colnames(res_p) <- paste('prog_hr', colnames(res_p),sep='_')
+	}else{
+	  res_p <- NA
+	}
 	
 	res_s <- t ( sapply(split(ds1, paste(ds1$dup)), ana1, form='Surv(tte, event) ~ arm + strata(grp)') )
 	

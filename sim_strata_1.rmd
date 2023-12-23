@@ -127,6 +127,7 @@ knitr::kable( summarizeMatrix(r1[, c('n','nevent', 'p_s','delta_p','O-E_M2','O-E
 
   
 ```
+ 
 
 # prevalence 0.1 , prognostic HR .4
 

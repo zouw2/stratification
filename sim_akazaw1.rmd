@@ -1,0 +1,216 @@
+---
+title: "simulation to study strategies to handle small strata: replicate and extend the work of Akazawa"
+author: "Wei Zou"
+date: "`r Sys.time()`"
+output: pdf_document
+---
+
+Version history
+
+* reproduce part of the table II in the paper
+
+* sim_strata_1b: use simsurv to replace rpact as the engine to simulate survival data. The simulation cannot handle ramp up enrollment or dropoff; but it can simulate data with high EPR easily
+
+* sim_strata_1: code is modified from C:/Users/zouw2/aPDL1/impower010/natera/programs/sim_collapsibility4_test_strata
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+
+
+
+library(knitr)
+
+library(ggplot2)
+
+ source('~/R/lib_2020/data_functions.r')
+source('~/R/lib_2020/output_functions.r')
+
+spec <- list(home  = '~/projects/stratification' )
+
+```
+
+ 
+
+```{r send jobs, eval=F}
+
+# this chuck is supposed to be run separately
+
+# run this first: #  ml load R
+
+prep_cmd <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$dup, ' ', s$hr,' ', s$med,' ', s$nEvent,' ',s$run_name, "' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+
+M <- 100
+
+
+spec <- list(home  = '~/projects/stratification', run_name =  'rep_aka_1',
+             seed.base= 27518, n = '400',  dup = '40', hr = .737, med = '10', nEvent= 320 , run_code = 'strat1b.r' , total_run=M) # readoutTime 24 is determined based of the SDF function to achieve 80% EPR, with a control median of 10 month: round(-log(0.2)/(log(2)/10), 1)
+
+# 1 strata
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+# 8 strata
+
+spec$n <- paste(rep(400/8, 8) , collapse = ',')
+spec$med <- paste(round(log(2) / exp( seq(0, 4, length.out = 8) + log(log(2)/10 ) ),2), collapse = ',')
+spec$hr <- paste(rep(.737, 8), collapse = ',')
+
+spec$run_name <- 'rep_aka_2' 
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+ 
+
+ 
+
+# 16 strata
+spec$n <- paste(c(rep(24, 8), rep(26, 8)) , collapse = ',')
+spec$med <- paste(round(log(2) / exp( seq(0, 4, length.out = 16) + log(log(2)/10 ) ),2), collapse = ',')
+spec$hr <- paste(rep(.737, 16), collapse = ',')
+spec$run_name <- 'rep_aka_3' 
+spec$total_run <- 200
+spec$dup <- 20
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+
+## simulate with 16 strata and analyze with 8 strata
+spec$n <- paste(c(rep(24, 8), rep(26, 8)) , collapse = ',')
+spec$med <- paste(round(log(2) / exp( seq(0, 4, length.out = 16) + log(log(2)/10 ) ),2), collapse = ',')
+spec$hr <- paste(rep(.737, 16), collapse = ',')
+spec$run_name <- 'rep_aka_3_cn' 
+spec$total_run <- 200
+spec$dup <- 20
+spec$run_code <- 'strat1b_aka_collapse_neighbor.r'
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+
+
+# approximately 32 strata
+
+spec$n <- paste(c(rep(12, 20), rep(14, 10), rep(10,2)) , collapse = ',')
+spec$med <- paste(round(log(2) / exp( seq(0, 4, length.out = 32) + log(log(2)/10 ) ),2), collapse = ',')
+spec$hr <- paste(rep(.737, 32), collapse = ',')
+spec$run_name <- 'rep_aka_4' 
+spec$total_run <- 200
+spec$dup <- 20
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+
+## simulate with 32 strata and analyze with 16 strata
+
+spec$n <- paste(c(rep(12, 20), rep(14, 10), rep(10,2)) , collapse = ',')
+spec$med <- paste(round(log(2) / exp( seq(0, 4, length.out = 32) + log(log(2)/10 ) ),2), collapse = ',')
+spec$hr <- paste(rep(.737, 32), collapse = ',')
+spec$run_name <- 'rep_aka_4_cn' 
+spec$total_run <- 200
+spec$dup <- 20
+spec$run_code <- 'strat1b_aka_collapse_neighbor.r'
+
+
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j)))
+}
+
+```
+
+ 
+
+# table II, 400 pts, 320 events
+ 
+```{r, warning=FALSE }
+
+ r1 <- readFolder.rdata( paste(spec$home,'reports/rep_aka_1'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r1[, c('n','nevent', 'qad_hr', 'p_s','delta_p' )]), digits=3, caption =paste('homogeneous: power of stratified:', round(mean( r1[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r1[, 'p'] <0.05) * 100, 1)) )
+
+  
+```
+
+
+
+```{r, warning=FALSE }
+
+  
+ r8 <- readFolder.rdata( paste(spec$home,'reports/rep_aka_2'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r8[, c('n','nevent', 'qad_hr_s', 'p_s','delta_p' )]), digits=3, caption =paste(length( grep('O-E_M', colnames(r8)) ), 'strata: power of stratified:', round(mean( r8[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r8[, 'p'] <0.05) * 100, 1)) )
+  
+``` 
+
+```{r, warning=FALSE }
+
+ 
+ r16 <- readFolder.rdata( paste(spec$home,'reports/rep_aka_3'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r16[, c('n','nevent', 'qad_hr_s', 'p_s','delta_p' )]), digits=3, caption =paste(length( grep('O-E_M', colnames(r16)) ), 'strata: power of stratified:', round(mean( r16[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r16[, 'p'] <0.05) * 100, 1)) )
+  
+``` 
+
+```{r, warning=FALSE }
+
+ 
+ r16_8 <- readFolder.rdata( paste(spec$home,'reports/rep_aka_3_cn'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r16_8[, c('n','nevent', 'qad_hr_s', 'p_s','delta_p' )]), digits=3, caption =paste('16 strata simulated but',length( grep('O-E_M', colnames(r16_8)) ), 'strata analyzed: power of stratified:', round(mean( r16_8[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r16_8[, 'p'] <0.05) * 100, 1)) )
+  
+``` 
+
+
+```{r, warning=FALSE }
+
+ 
+ r32 <- readFolder.rdata( paste(spec$home,'reports/rep_aka_4'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r32[, c('n','nevent', 'qad_hr_s', 'p_s','delta_p' )]), digits=3, caption =paste(length( grep('O-E_M', colnames(r16)) ), 'strata: power of stratified:', round(mean( r32[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r32[, 'p'] <0.05) * 100, 1)) )
+  
+``` 
+
+```{r, warning=FALSE }
+
+ 
+ r32_16 <- readFolder.rdata( paste(spec$home,'reports/rep_aka_4_cn'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r32_16[, c('n','nevent', 'qad_hr_s', 'p_s','delta_p' )]), digits=3, caption =paste('32 strata simulated but',length( grep('O-E_M', colnames(r32_16)) ), 'strata analyzed: power of stratified:', round(mean( r32_16[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r32_16[, 'p'] <0.05) * 100, 1)) )
+  
+``` 
+  
+  

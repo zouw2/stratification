@@ -170,6 +170,56 @@ collapse_grp <- function(dsIn, minEvent = 10, rule = c('collapseGroup','removeSt
   }
 
 
+# leave collapse_grp() alone for imp150 simulation. the new function collapse_grp2() will be a general function
+collapse_grp2 <- function(dsIn, minN = 10, rule = c('collapseGroup','removeStratum'), sumFun=sum,  
+                          strat.order ) 
+  {
+  # if sumFun is sum, the decision to collapse strata is based on number of events
+  # if sumfun is length, the decision to collapse is based on number of patients
+  
+  
+  # strat.order gives a vector of strata (M1 etc) with an order to removed, eg(c('M1','M2','M3'))
+  # markerList defines each stratum. e.g. c('M1-M2-M3-M4-','M1+M2-M3-M4-', ...), it must be in the same order
+  
+  stopifnot(all(c('grp','event') %in% colnames(dsIn)))
+  stopifnot(length(rule) == 1)
+  dsIn$grp <- as.character(dsIn$grp)
+    e1 <- with(dsIn, tapply(event,grp, sumFun))
+    if(rule == 'collapseGroup'){
+          
+        if(any(e1) < minN){
+    
+          group2Collapse <- names(e1)[e1 < minN]
+          if(sum(e1[group2Collapse]) >= minN) {
+            dsIn[dsIn$grp %in% group2Collapse,'grp'] <- 'MCollapse'
+          }else{
+            e2 <- e1[setdiff(names(e1), group2Collapse)]
+            nextSmallest <- names(e2)[which.min(e2)]
+            dsIn[dsIn$grp %in% group2Collapse,'grp'] <- nextSmallest
+          }
+        }
+    }
+      
+    if(rule == 'removeStratum') {  
+      
+      grp <- dsIn$grp
+      e2 <- e1
+      j <- 1
+      while(any(e2  < minN)) {
+           grp <- gsub(paste(strat.order[j],'(\\+|\\-)', sep =''),'', grp)
+           e2 <-   tapply(dsIn$event, grp, sumFun)
+           j <- j+1
+      }
+      dsIn$grp <- grp
+    }
+ 
+    
+    dsIn
+}
+
+
+
+
 sim4 <- function( p  , time , maxPms = 10, rampUpTime, estimatePrognostic=F ) {
 # sim4 is similar to sim3, but it adds rules to collapse stratification groups: if the number of event is fewer than minE, the group will be collapsed
   
@@ -350,7 +400,7 @@ sim3b <- function( p     ) {
 	res1b <-  dcast(res1, dup ~ grp, value.var='O.E')
 	colnames(res1b) <- paste('O-E', colnames(res1b),sep ='_')
 	
-	if(length(unique(ds1$grp)) > 1){
+	if(length(unique(ds1$grp)) ==2 ){
 	
 	res_p <- t ( sapply(split(ds1, paste(ds1$dup, ds1$arm)), function(d, form= 'Surv(tte, event) ~ grp') {
 	  s1 <- summary( survdiff( as.formula(form)  , data =   d) )
@@ -373,6 +423,116 @@ sim3b <- function( p     ) {
 	      res_s[, c('p_s','qad_hr_s'), drop=F], delta_p = res0[,'p'] - res_s[,'p_s'], res1b, res_p)
 
 }
+
+
+
+
+sim4b <- function( p  , cm ,collapseRule ,stratumOrder  ) {
+  # modified by sim3b(), it mimics sim4() to allow different rules to collapse stratum
+  # cm, a data frame that defines strata, comes from the function constructMedians()
+  
+ stopifnot(p$dup == 1)
+   # Simulate the event times
+  j <- 0;
+  ds1 <- NULL
+  readoutTime <- round( -log(1 - p$nEvent / sum(cm$n)) / (log(2)/ min(cm$med)), 1) # exponential distribution SDF
+
+  while(j <= 10 && (is.null(ds1) || ( (!is.null(ds1)) && sum(ds1[,'event']) < pL$nEvent))) {
+ 
+    if(j > 0) {
+       print(paste('iteration', j  , 'with read out time at', readoutTime ))
+    }
+    
+    ds1 <- do.call(rbind, lapply(1:nrow(cm), function(i) {
+      
+    # Create a data frame with the subject IDs and treatment covariate
+        cov <- data.frame(id = 1:cm[i,'n'],
+                          treatmentGroup = 0)
+        cov$treatmentGroup[sample(cm[i,'n'], size = cm[i,'n']/2)] <- 1   
+
+      dat  <- simsurv(dist= 'exponential', lambdas = log(2)/cm[i,'med'], 
+                   betas = c(treatmentGroup = log( cm[i,'hr'])), 
+                   x = cov, 
+                   maxt = readoutTime) 
+      
+      # rename variables
+      dat$accrualTime <- 0  # all patients were enrolled instantaneously
+      dat$observationTime <- readoutTime
+      dat$survivalTime <- dat$eventtime
+      dat$dropoutTime <-  readoutTime * 2 # just make the dropout far away
+        colnames(dat) <- gsub('status','event', colnames(dat))
+  
+        dat$grp <- cm[i,'stratum']
+        
+    # Merge the simulated event times onto covariate data frame
+  dat <- merge(cov, dat)
+    dat$treatmentGroup <- dat$treatmentGroup + 1 # 1 for control and 2 for active; which is opposite to rpact
+      
+      
+   
+    dat
+  }))
+    
+    j  <- j+1
+    readoutTime  <- readoutTime + j * min(cm[,'med'])
+     
+    
+    
+  }
+  
+   
+  # cut event
+  if(sum(ds1[,'event']) > p$nEvent){
+       ds1 <- cut2event(ds1, p$nEvent) 
+  }else{
+    ds1$'timeUnderObservation' <- ds1$eventtime
+  }
+   
+  ds1$arm <- factor(ds1$treatmentGroup, levels=c(1, 2), labels = c('B','A'))
+  ds1$grp <- factor(ds1$grp, levels= cm[,'stratum'])
+  colnames(ds1) <- gsub('timeUnderObservation','tte', colnames(ds1))
+
+  ds1$dup <- 1 
+  
+	stopifnot(nrow(ds1) == sum(cm[,'n']) *p$dup)
+	c1 <- with(ds1, table(treatmentGroup,  dup, grp, useNA = 'ifany'))
+	for (i in 1:nrow(cm) ) {
+   stopifnot(all(as.vector(c1[,, i]) == cm[i,'n'] /2  ))
+	}
+	 
+	res0 <- t ( sapply(split(ds1, paste(ds1$dup)), ana1, form= 'Surv(tte, event) ~ arm') )
+	 	res2 <-  t ( sapply(split(ds1, paste(ds1$dup)), function(d) {
+  	  d2 <- collapse_grp2(d, minN=p$minE, rule= collapseRule, sumFun = sum, strat.order =stratumOrder )
+   
+  	  c( ana1( d = d2 , form= 'Surv(tte, event) ~ arm + strata(grp)'), n_strata = length(unique(d2$grp)))
+	  }))
+	 	
+	 	res3 <-  t ( sapply(split(ds1, paste(ds1$dup)), function(d) {
+  	  d2 <- collapse_grp2(d, minN=p$minE, rule= collapseRule, sumFun = length, strat.order =stratumOrder )
+   
+  	  c( ana1( d = d2 , form= 'Surv(tte, event) ~ arm + strata(grp)'), n_strata = length(unique(d2$grp)))
+	  }))
+	 	
+	 	colnames(res2) <- paste(colnames(res2),'cE', sep='_')
+	  colnames(res3) <- paste(colnames(res3),'cN', sep='_')
+	  
+	res_s <- t ( sapply(split(ds1, paste(ds1$dup)), ana1, form='Surv(tte, event) ~ arm + strata(grp)') )
+	
+	colnames(res_s) <- paste(colnames(res_s), 's', sep = '_')
+	#with(ds1, tapply(tte, list(arm, grp), median))
+	
+ stopifnot(all(row.names(res0) == row.names(res_s)))
+
+	cbind(res0[, c('n','nevent','p','qad_hr'), drop=F],
+	      res_s[, c('p_s','qad_hr_s'), drop=F], 
+	      res2[, c('p_cE','qad_hr_cE','n_strata_cE'), drop=F], 
+	      res3[, c('p_cN','qad_hr_cN','n_strata_cN'), drop=F],
+	      delta_p = res0[,'p'] - res_s[,'p_s'],
+	      delta_pE = res2[,'p_cE'] - res_s[,'p_s'],
+	      delta_pN = res3[,'p_cN'] - res_s[,'p_s'])
+
+}
+
 
 
 constructMedians <- function( bigN = 1e6, overallMed = 5, freq=c(M1=0.45, M2=0.2), hr = c(0.7, 0.4), check_medians =F) {

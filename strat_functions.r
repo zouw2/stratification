@@ -135,7 +135,12 @@ ana1 <- function(d, form  ){
 
 check_para <- function(p) {
   print(unlist(p)) 
-  stopifnot(all(sapply(p$n, function(x) abs(as.integer(x) - x) < 1e-6 && x%%2 == 0 && x >= 2)))
+  if (is.null(p$fractionActiveArm)) p$fractionActiveArm <- 0.5 # handle unequal randomization
+  
+  stopifnot(all(sapply(p$n, function(x) {
+    x1 <- x * p$fractionActiveArm 
+    abs(as.integer(x) - x) < 1e-6  && x >= 2  &&  abs(as.integer(x1) - x1) < 1e-6 
+    })  )  )
   stopifnot(length(p$n) == length(p$hr))
   stopifnot(length(p$n) == length(p$med))
   if(!is.null(p$nEvent)) stopifnot(sum(p$n) >= p$nEvent)
@@ -321,6 +326,9 @@ sim3b <- function( p     ) {
    # Simulate the event times
   j <- 0;
   ds1 <- NULL
+  
+  if (is.null(p$fractionActiveArm)) p$fractionActiveArm <- 0.5 # handle unequal randomization
+  
   readoutTime <- round( -log(1 - p$nEvent / sum(p$n)) / (log(2)/ min(p$med)), 1) # exponential distribution SDF
 
   while(j <= 10 && (is.null(ds1) || ( (!is.null(ds1)) && sum(ds1[,'event']) < pL$nEvent))) {
@@ -334,7 +342,7 @@ sim3b <- function( p     ) {
     # Create a data frame with the subject IDs and treatment covariate
         cov <- data.frame(id = 1:p$n[i],
                           treatmentGroup = 0)
-        cov$treatmentGroup[sample(p$n[i], size = p$n[i]/2)] <- 1   
+        cov$treatmentGroup[sample(p$n[i], size = p$n[i] * p$fractionActiveArm)] <- 1   
 
       dat  <- simsurv(dist= 'exponential', lambdas = log(2)/p$med[i], 
                    betas = c(treatmentGroup = log( p$hr[i])), 
@@ -384,7 +392,9 @@ sim3b <- function( p     ) {
 	stopifnot(nrow(ds1) == with(p, sum(n) *dup))
 	c1 <- with(ds1, table(treatmentGroup,  dup, grp, useNA = 'ifany'))
 	for (i in 1:length(p$n)) {
-   stopifnot(all(as.vector(c1[,, i]) == p$n[i] /2  ))
+   #stopifnot(all(as.vector(c1[,, i]) == p$n[i]  * p$fractionActiveArm ))
+	  stopifnot( abs( c1['2',, i]  - p$n[i]  * p$fractionActiveArm ) < 1e-6 )
+	  stopifnot( abs( c1['1',, i]  - p$n[i]  * ( 1 - p$fractionActiveArm ) ) < 1e-6)
 	}
 	 
 	
@@ -430,6 +440,7 @@ sim3b <- function( p     ) {
 sim4b <- function( p  , cm ,collapseRule ,stratumOrder  ) {
   # modified by sim3b(), it mimics sim4() to allow different rules to collapse stratum
   # cm, a data frame that defines strata, comes from the function constructMedians()
+  stopifnot(!is.null(p$fractionActiveArm ))
   
  stopifnot(p$dup == 1)
    # Simulate the event times
@@ -448,7 +459,7 @@ sim4b <- function( p  , cm ,collapseRule ,stratumOrder  ) {
     # Create a data frame with the subject IDs and treatment covariate
         cov <- data.frame(id = 1:cm[i,'n'],
                           treatmentGroup = 0)
-        cov$treatmentGroup[sample(cm[i,'n'], size = cm[i,'n']/2)] <- 1   
+        cov$treatmentGroup[sample(cm[i,'n'], size = cm[i,'n'] * p$fractionActiveArm )] <- 1   
 
       dat  <- simsurv(dist= 'exponential', lambdas = log(2)/cm[i,'med'], 
                    betas = c(treatmentGroup = log( cm[i,'hr'])), 
@@ -497,20 +508,24 @@ sim4b <- function( p  , cm ,collapseRule ,stratumOrder  ) {
 	stopifnot(nrow(ds1) == sum(cm[,'n']) *p$dup)
 	c1 <- with(ds1, table(treatmentGroup,  dup, grp, useNA = 'ifany'))
 	for (i in 1:nrow(cm) ) {
-   stopifnot(all(as.vector(c1[,, i]) == cm[i,'n'] /2  ))
+   # stopifnot(all(as.vector(c1[,, i]) == cm[i,'n'] /2  ))
+	  stopifnot( abs( c1['2',, i]  - cm[i,'n']  * p$fractionActiveArm ) < 1e-6 )
+	  stopifnot( abs( c1['1',, i]  - cm[i,'n']  * ( 1 - p$fractionActiveArm ) ) < 1e-6)
+ 
+	
 	}
 	 
 	res0 <- t ( sapply(split(ds1, paste(ds1$dup)), ana1, form= 'Surv(tte, event) ~ arm') )
 	 	res2 <-  t ( sapply(split(ds1, paste(ds1$dup)), function(d) {
   	  d2 <- collapse_grp2(d, minN=p$minE, rule= collapseRule, sumFun = sum, strat.order =stratumOrder )
    
-  	  c( ana1( d = d2 , form= 'Surv(tte, event) ~ arm + strata(grp)'), n_strata = length(unique(d2$grp)))
+  	  c( ana1( d = d2 , form= 'Surv(tte, event) ~ arm + strata(grp)'), n_strata = length(unique(d2$grp)), minStrataSize= min(table(d2$grp)) )
 	  }))
 	 	
 	 	res3 <-  t ( sapply(split(ds1, paste(ds1$dup)), function(d) {
   	  d2 <- collapse_grp2(d, minN=p$minE, rule= collapseRule, sumFun = length, strat.order =stratumOrder )
    
-  	  c( ana1( d = d2 , form= 'Surv(tte, event) ~ arm + strata(grp)'), n_strata = length(unique(d2$grp)))
+  	  c( ana1( d = d2 , form= 'Surv(tte, event) ~ arm + strata(grp)'), n_strata = length(unique(d2$grp)) , minStrataSize= min(table(d2$grp)) )
 	  }))
 	 	
 	 	colnames(res2) <- paste(colnames(res2),'cE', sep='_')
@@ -525,8 +540,8 @@ sim4b <- function( p  , cm ,collapseRule ,stratumOrder  ) {
 
 	cbind(res0[, c('n','nevent','p','qad_hr'), drop=F],
 	      res_s[, c('p_s','qad_hr_s'), drop=F], 
-	      res2[, c('p_cE','qad_hr_cE','n_strata_cE'), drop=F], 
-	      res3[, c('p_cN','qad_hr_cN','n_strata_cN'), drop=F],
+	      res2[, c('p_cE','qad_hr_cE','n_strata_cE', 'minStrataSize_cE'), drop=F], 
+	      res3[, c('p_cN','qad_hr_cN','n_strata_cN', 'minStrataSize_cN'), drop=F],
 	      delta_p = res0[,'p'] - res_s[,'p_s'],
 	      delta_pE = res2[,'p_cE'] - res_s[,'p_s'],
 	      delta_pN = res3[,'p_cN'] - res_s[,'p_s'])

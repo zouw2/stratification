@@ -587,7 +587,7 @@ if(!is.null(f1.name)) {
   
   if(check_medians) {
     
-    plot(density(unlist(s1)), col='black', main='overall distribution from simulation')
+    plot(density(unlist(s1)), col='black', main= paste( 'overall distribution from simulation, with median=', round(median(unlist(s1)),2) ))
 lines(density(rexp(10000, rate=log(2)/overallMed)), col='red')
 legend('topright', lty=1, legend = c('mixed sim','standard exp'), col=c('black','red'))
     

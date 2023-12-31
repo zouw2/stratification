@@ -107,3 +107,10 @@ constructMedians( bigN = 1e6, overallMed = 5, freq=c(M1=0.45, M2=0.2), hr = c(0.
 constructMedians( bigN = 1e6, overallMed = 10, freq=c(M1=0.45, M2=0.2, M3=0.3), hr = c(0.7, 0.55, 0.4), check_medians =T)
 
 ```
+
+```{r will this break it,echo=T}
+
+c1 <- constructMedians( bigN = 1e6, overallMed = 1.4, freq=c(M1=0.2, M2=0.2), hr = c(0.4, 0.4), check_medians =T)
+```
+
+the overall median is `r c1['overallM']`

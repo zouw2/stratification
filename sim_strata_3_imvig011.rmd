@@ -138,7 +138,7 @@ spec$med <- paste(rep(4.4, nrow(cm2)), collapse=','); spec$run_name=  'ivg011_si
 
 r0 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim0'  , sep = '/'), objName = 'r1')
 
-knitr::kable( summarizeMatrix(r0[, c('n','nevent', 'p_s','delta_p')]), digits=3, caption =paste(' power of stratified:', round(mean( r0[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r0[, 'p'] <0.05) * 100, 1)) )
+knitr::kable( summarizeMatrix(r0[, c('n','nevent', "qad_hr", 'p_s','delta_p')]), digits=3, caption =paste(' power of stratified:', round(mean( r0[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r0[, 'p'] <0.05) * 100, 1)) )
 
 ```
 
@@ -150,7 +150,7 @@ knitr::kable( summarizeMatrix(r0[, c('n','nevent', 'p_s','delta_p')]), digits=3,
 
 r1 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim1'  , sep = '/'), objName = 'r1')
 
-knitr::kable( summarizeMatrix(r1[, c('n','nevent', 'p_s','delta_p')]), digits=3, caption =paste(' power of stratified:', round(mean( r1[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r1[, 'p'] <0.05) * 100, 1)) )
+knitr::kable( summarizeMatrix(r1[, c('n','nevent', "qad_hr",'p_s','delta_p')]), digits=3, caption =paste(' power of stratified:', round(mean( r1[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r1[, 'p'] <0.05) * 100, 1)) )
 
 ```
 
@@ -197,9 +197,24 @@ for (j in seq(1, spec$total_run , by= 1)) {
 
 # try different values of minE
 
+# collapseGroup
+
 spec <- list(home  = '~/projects/stratification', run_name =  'ivg011_sim3',
              seed.base= 27518, 
                dup = '20' , nEvent= '192', minE='6,20,2', run_code = 'strat3c.r' , total_run=M )
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd2(j)))
+}
+
+
+# removeStratum option
+spec <- list(home  = '~/projects/stratification', run_name =  'ivg011_sim4',
+             seed.base= 27518, 
+               dup = '20' , nEvent= '192', minE='4,12,2', run_code = 'strat3d.r' , total_run=M )
 
 system(paste('cd', paste(spec$home,'log', sep ='/')))
 
@@ -235,7 +250,22 @@ knitr::kable( summarizeMatrix(r2[, c('n','nevent', 'p_s', 'p_cE','n_strata_cE','
 p_ce <- with(r1, tapply(p_cE, minE, function(x)   mean( x <0.05)))
 p_cn <- with(r1, tapply(p_cN, minE, function(x)   mean( x <0.05)))
 
-plot(x = as.integer(names(p_ce)), y = p_ce, type='b', main = 'power changes as threshold number', ylab='power', xlab='minimal number of event/patient ')
+plot(x = as.integer(names(p_ce)), y = p_ce, type='b', main = 'power changes as threshold number for collapseGroup', ylab='power', xlab='minimal number of event/patient ' , ylim=c(0.74, 0.8) )
+lines(x = as.integer(names(p_cn)), y = p_cn, type='b', col='red')
+legend('topright', lty=1, legend = c('# of events','# of Pts'), col=c('black','red'))
+
+```
+
+
+```{r, warning=FALSE }
+
+ r1 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim4'  , sep = '/'), objName = 'r1')
+
+
+p_ce <- with(r1, tapply(p_cE, minE, function(x)   mean( x <0.05)))
+p_cn <- with(r1, tapply(p_cN, minE, function(x)   mean( x <0.05)))
+
+plot(x = as.integer(names(p_ce)), y = p_ce, type='b', main = 'power changes as threshold number for removeStratum', ylab='power', xlab='minimal number of event/patient ', ylim=c(0.74, 0.8))
 lines(x = as.integer(names(p_cn)), y = p_cn, type='b', col='red')
 legend('topright', lty=1, legend = c('# of events','# of Pts'), col=c('black','red'))
 

@@ -1,0 +1,217 @@
+---
+title: "simulation to study strategies to handle small strata"
+author: "Wei Zou"
+date: "`r Sys.time()`"
+output: pdf_document
+---
+
+Version history
+
+* 4_imvigor011_mdd: power analysis at mdd HR of 0.74
+
+* 3_imvigor011: power analysis at target HR of 0.65
+
+this program compare stratified vs unstratified analyses
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library(knitr)
+library(reshape2)
+library(ggplot2)
+spec <- list(home  = '~/projects/stratification' )
+
+ source('~/R/lib_2020/data_functions.r')
+source('~/R/lib_2020/output_functions.r')
+
+ 
+source(paste(spec$home,'strat_functions.r', sep = '/'))
+```
+
+```{r parameters, eval=F}
+
+ 
+load( paste(spec$home,'imvigor011_sim_setup1.Rdata', sep ='/') )
+
+cm2$hr <- 0.74
+
+save(cm2,   feature.table, file= paste(spec$home,'imvigor011_sim_setup2_mdd.Rdata', sep ='/'), version=2) 
+
+```
+ 
+
+```{r sim, eval=F}
+load('~/projects/stratification/imvigor011_sim_setup2_mdd.Rdata') 
+
+# this chuck is supposed to be run separately
+
+# run this first: #  ml load R
+
+prep_cmd <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base, " ", s$n, " ", s$dup, ' ', s$hr,' ', s$med,' ', s$nEvent,' ',s$run_name, " 2/3' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+# with strata
+
+spec <- list(home  = '~/projects/stratification', run_name =  'ivg011_sim1_mdd',
+             seed.base= 27518, 
+             n = paste(cm2$n, collapse=','),  dup = '20', 
+             hr = paste(rep(0.74, nrow(cm2) ), collapse=','), 
+             med = paste(round(cm2$med,2), collapse=','), nEvent= '192', run_code = 'strat1b.r' , total_run=1000)
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j, spec)))
+}
+
+# remove strata
+
+spec$med <- paste(rep(4.4, nrow(cm2)), collapse=','); spec$run_name=  'ivg011_sim0_mdd';
+ for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd(j, spec)))
+}
+
+```
+
+# simulate imvigor011 power 
+
+
+## sim without strata
+
+```{r, warning=FALSE }
+
+r0 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim0_mdd'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r0[, c('n','nevent', "qad_hr", 'p_s','delta_p')]), digits=3, caption =paste(' power of stratified:', round(mean( r0[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r0[, 'p'] <0.05) * 100, 1)) )
+
+```
+
+
+## sim with with strata
+
+ 
+```{r, warning=FALSE }
+
+r1 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim1_mdd'  , sep = '/'), objName = 'r1')
+
+knitr::kable( summarizeMatrix(r1[, c('n','nevent', "qad_hr",'p_s','delta_p')]), digits=3, caption =paste(' power of stratified:', round(mean( r1[, 'p_s'] <0.05) * 100, 1),'unstratified:', round(mean( r1[, 'p'] <0.05) * 100, 1)) )
+
+```
+
+# try different collapsing strategy
+
+```{r sim_collpase, eval=F}
+load('~/projects/stratification/imvigor011_sim_setup2_mdd.Rdata') 
+M <- 1000  
+prep_cmd2 <- function(i, s = spec){
+  
+  log_home <- paste(spec$home, 'log', spec$run_name, sep = '/')
+  if(!file.exists(log_home))   dir.create(log_home, recursive =T)
+  
+  log_out <-  paste(log_home, '/', i,'.cmd', sep='')
+  cat("#!/bin/bash
+    #SBATCH -J strat_sim
+    #SBATCH --qos=short
+    #SBATCH --cpus-per-task 4
+    #SBATCH --mem-per-cpu=4G
+    #SBATCH -o sim.o%J        
+    #SBATCH -e sim.e%J
+    ml R/R_4.1.0_Bioc_3.13/R-4.1.0-Bioc-3.13-prd-20210913
+   
+R CMD BATCH --no-save --no-restore '--args ", i+s$seed.base,   " ", s$dup, ' ',  s$nEvent,' ',s$run_name, ' ', s$minE, " 2/3' ",  s$home, "/", s$run_code,' ', log_home,"/run_",i,".log "
+    ,
+      file =log_out, sep='')
+  
+  return(log_out)
+  
+}
+
+ 
+
+
+# try different values of minE
+
+# collapseGroup
+
+spec <- list(home  = '~/projects/stratification', run_name =  'ivg011_sim3_mdd',
+             seed.base= 27518, 
+               dup = '20' , nEvent= '192', minE='6,20,2', run_code = 'strat3c_mdd.r' , total_run=M )
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd2(j)))
+}
+
+
+# removeStratum option
+spec <- list(home  = '~/projects/stratification', run_name =  'ivg011_sim4_mdd',
+             seed.base= 27518, 
+               dup = '20' , nEvent= '192', minE='4,12,2', run_code = 'strat3d_mdd.r' , total_run=M )
+
+system(paste('cd', paste(spec$home,'log', sep ='/')))
+
+#for (j in seq(1, spec$total_run , by= spec$n_run)) {
+for (j in seq(1, spec$total_run , by= 1)) {
+  system(paste('sbatch', prep_cmd2(j)))
+}
+
+ 
+
+```
+
+ 
+
+## different number of minE
+
+```{r, warning=FALSE }
+
+ r1 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim3_mdd'  , sep = '/'), objName = 'r1')
+
+
+p_ce <- with(r1, tapply(p_cE, minE, function(x)   mean( x <0.05)))
+p_cn <- with(r1, tapply(p_cN, minE, function(x)   mean( x <0.05)))
+
+plot(x = as.integer(names(p_ce)), y = p_ce, type='b', main = 'power changes as threshold number for collapseGroup', ylab='power', xlab='minimal number of event/patient ' , ylim=c(0.44, 0.51) )
+lines(x = as.integer(names(p_cn)), y = p_cn, type='b', col='red')
+legend('topright', lty=1, legend = c('# of events','# of Pts'), col=c('black','red'))
+
+```
+
+
+```{r, warning=FALSE }
+
+ r1 <- readFolder.rdata( paste(spec$home,'reports/ivg011_sim4_mdd'  , sep = '/'), objName = 'r1')
+
+
+p_ce <- with(r1, tapply(p_cE, minE, function(x)   mean( x <0.05)))
+p_cn <- with(r1, tapply(p_cN, minE, function(x)   mean( x <0.05)))
+
+plot(x = as.integer(names(p_ce)), y = p_ce, type='b', main = 'power changes as threshold number for removeStratum', ylab='power', xlab='minimal number of event/patient ', ylim=c(0.44, 0.51))
+lines(x = as.integer(names(p_cn)), y = p_cn, type='b', col='red')
+legend('topright', lty=1, legend = c('# of events','# of Pts'), col=c('black','red'))
+
+```
+ 

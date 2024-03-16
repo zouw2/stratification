@@ -587,9 +587,7 @@ tr4b$TRDTC <- as.Date(tr4b$TRDTC)
 
 stopifnot(!any(is.na(tr4b$TRDTC))) 
 
-# within each subject, records are sorted by TRDTC
-tr4b <- tr4b[with(tr4b, order(USUBJID, TRDTC)), ]
- 
+
 ntRespByVisit <- ddply(tr4b, .(USUBJID, visit2), function(d1, tlist = nt_list, ne_code = c(NA,'NOT ASSESSED')){
   s <- d1[1,'USUBJID']
   stopifnot(! s %in% tlist)
@@ -605,6 +603,9 @@ ntRespByVisit <- ddply(tr4b, .(USUBJID, visit2), function(d1, tlist = nt_list, n
   })
 
 #subset(ntRespByVisit, is.infinite(early_date_target))
+
+# the ddply function sorts records by the value of visit2; I need sort it by date
+ntRespByVisit  <- ntRespByVisit[with(ntRespByVisit , order(USUBJID, early_date_nt)), ]
 
 ntResp <- ddply(ntRespByVisit, .(USUBJID), function(d){
   if( any (d$ntRespVisit %in% 'CR')) { 

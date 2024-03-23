@@ -2,9 +2,7 @@
 title: "re-derive ORR"
 author: "wei zou"
 date: "`r Sys.time()`"
-output:
-  html_document:
-    df_print: paged
+
 ---
 
 ```{r setup, include=FALSE}
@@ -19,13 +17,13 @@ rice_session(
   {
    # asl <- as.data.frame(  rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/qa/outdata_vad/adsl.sas7bdat') )
    # 
-    raw <- rice_read_zip('root/clinical_studies/RO7496353/CDT70424/GO44010/source/other/prod/GO44010_Daily_Extract_20240311071607.zip')
+    raw <- rice_read_zip('root/clinical_studies/RO7496353/CDT70424/GO44010/source/other/prod/GO44010_Daily_Extract_20240321071609.zip')
    # 
-rs <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_2nd/data/sdtmv/rs.sas7bdat"))
+rs <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/rs.sas7bdat"))
 
-tu <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_2nd/data/sdtmv/tu.sas7bdat"))
+tu <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/tu.sas7bdat"))
 
-tr <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_2nd/data/sdtmv/tr.sas7bdat"))
+tr <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/tr.sas7bdat"))
 
  
 },
@@ -389,6 +387,8 @@ with(subset(tr1, is.na(TUORRES)), stopifnot(all(TRGRPID %in%  'NEW')))
 
 # in this dataset,  records with TOO SMALL TO MEASURE have no measurement; and the corresponding measurements are mapped to a separate records
 
+unique(tr1$TRORRES)
+
 tr2 <-  subset(tr1, ! ( TRORRES %in% c('ND','TOO SMALL TO MEASURE','NOT EVALUABLE') | is.na(TUORRES)))  
 
 #=========================study specific adjustment
@@ -587,7 +587,9 @@ tr4b$TRDTC <- as.Date(tr4b$TRDTC)
 
 stopifnot(!any(is.na(tr4b$TRDTC))) 
 
-
+# within each subject, records are sorted by TRDTC
+ 
+ 
 ntRespByVisit <- ddply(tr4b, .(USUBJID, visit2), function(d1, tlist = nt_list, ne_code = c(NA,'NOT ASSESSED')){
   s <- d1[1,'USUBJID']
   stopifnot(! s %in% tlist)
@@ -598,13 +600,13 @@ ntRespByVisit <- ddply(tr4b, .(USUBJID, visit2), function(d1, tlist = nt_list, n
 
   d1$early_date_nt <- with(subset(d1, !TRSTRESC %in% ne_code), min(TRDTC), na.rm=T)  
   d1$late_date_nt <- with(subset(d1, !TRSTRESC %in% ne_code), max(TRDTC), na.rm=T)
-    
-  d1[1,  c('USUBJID','visit2',   'ntRespVisit','early_date_nt','late_date_nt')] 
+  d1$all_nt_assessed <- all(nt_list[[s]] %in% d1$TRLNKID)  
+  d1[1,  c('USUBJID','visit2',   'ntRespVisit','early_date_nt','late_date_nt','all_nt_assessed')] 
   })
 
-#subset(ntRespByVisit, is.infinite(early_date_target))
+# for non-target lesions, the overall response will be derived from available assessment (even if there are some nt not assessed). If some non-target lesions are not assessed, the all_nt_assessed variable will indicate this.
 
-# the ddply function sorts records by the value of visit2; I need sort it by date
+#subset(ntRespByVisit, is.infinite(early_date_target))
 ntRespByVisit  <- ntRespByVisit[with(ntRespByVisit , order(USUBJID, early_date_nt)), ]
 
 ntResp <- ddply(ntRespByVisit, .(USUBJID), function(d){
@@ -661,8 +663,9 @@ print('RRSP1 records assessing non-target leions that are missed by Wei')
 
 with(comp2$matched, table(RSSTRESC, ntRespVisit, useNA = 'ifany'))
 
+# the second part of logic [! (!all_nt_assessed & RSSTRESC  %in% 'NE')] may be removed
+diff_nt <- subset(comp2$matched, RSSTRESC != ntRespVisit & ! (!all_nt_assessed & RSSTRESC  %in% 'NE')  )
 
-diff_nt <- subset(comp2$matched, RSSTRESC != ntRespVisit  )
 
 write.csv(diff_nt[, c('USUBJID','visit2','RSSTRESC', 'early_date_nt',	'late_date_nt',	'ntRespVisit')]
 , file = paste(outF,'diff_nontarget.csv', sep= '/'), row.names=F)

@@ -1,0 +1,780 @@
+---
+title: "re-derive ORR"
+author: "wei zou"
+date: "`r Sys.time()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library(rice)
+library(reshape2)
+library(plyr)
+library(dplyr)
+library(knitr)
+
+date1 <- '20240506'
+
+rice_session(
+  {
+   asl <- as.data.frame(  rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/qa/outdata_vad/adsl.sas7bdat') )
+   
+   rrsp1 <- as.data.frame(rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/data/raw/rrsp1.sas7bdat'))
+   
+   rtn2 <- as.data.frame(rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/data/raw/rtn2.sas7bdat'))
+   rtt2 <- as.data.frame(rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/data/raw/rtt2.sas7bdat'))
+   
+rs <- as.data.frame( rice_read("root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/data/sdtmv/rs.sas7bdat"))
+
+tu <- as.data.frame( rice_read("root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/data/sdtmv/tu.sas7bdat"))
+
+tr <- as.data.frame( rice_read("root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/data/sdtmv/tr.sas7bdat"))
+
+ 
+},
+password = Sys.getenv("ENTIMICE_PASSWORD")
+)
+
+
+write.csv(rrsp1, file = '~/aTigit/sky06/crf/rrsp1.csv', row.names=F)
+write.csv(rtt2, file = '~/aTigit/sky06/crf/rtt2.csv', row.names=F)
+write.csv(rtn2, file = '~/aTigit/sky06/crf/rtn2.csv', row.names=F)
+```
+
+
+```{r  functions, echo=F}
+
+source('~/R/lib_2020/data_functions.r')
+
+# This function merge ds1 and ds2 by visit variable if the visit is not unscheduled, for unscheduled visit, the 2 data fames are merged by date. The date info  could be a range. when merging unschedule visit, data source 1 is prioritized : for each unscheduled visit from source 1, there is an attempt to find the closest match in source 2, even though the match could be far away, based on the date info. When merging planned visit, there is full join by USUBJID and visit.var
+
+approx_merge <- function(
+  ds1 = subset(targetResp, ! visit2 %in% 'SCREENING') , 
+  ds2 = subset(rs, RSTESTCD %in% c('TRGRESP') & RSEVAL %in% 'INVESTIGATOR'), 
+  ds1.time.var = c('early_date_target','late_date_target'),  # the first time variable will be used to calculate gap day
+  ds2.time.var='RSDTC',  
+  ds1.visit.var = 'visit2',
+  ds2.visit.var = 'VISIT',
+  ds2.vars =c('RSSTRESC') ){
+  
+  stopifnot(all(c(ds1.time.var, ds1.visit.var) %in% colnames(ds1)))
+  stopifnot(all(c(ds2.time.var, ds2.visit.var) %in% colnames(ds2)))
+  stopifnot(all(sapply(ds1.time.var, function(v) class(ds1[[v]])) %in%  'Date'))
+  stopifnot(all(sapply(ds2.time.var, function(v) class(ds2[[v]])) %in%  'Date'))
+  stopifnot(! any( c(ds2.visit.var, ds2.time.var) %in% colnames(ds1)))
+  
+  v <- vector_overlap(ds1$USUBJID, ds2$USUBJID)
+  common_subj <- row.names(v[ v[,1] & v[,2], ])
+  
+  dsL <- lapply( common_subj, function(s){
+ 
+    ds1b <- subset(ds1, USUBJID %in% s)
+    ds2b <- subset(ds2, USUBJID %in% s)
+    
+    uns1 <- grepl('UNSCHEDULE', ds1b[[ds1.visit.var]])
+    uns2 <- grepl('UNSCHEDULE', ds2b[[ds2.visit.var]])
+    
+    ds12 <- merge( ds1b[!uns1, ], ds2b[!uns2,  c('USUBJID', ds2.visit.var, ds2.time.var, ds2.vars)], all=T, by.x=c('USUBJID', ds1.visit.var), by.y=c('USUBJID', ds2.visit.var))
+    
+    ds12[[ds2.visit.var]] <- ds12[[ds1.visit.var]]
+    
+    ds12$gap_day <- abs(as.integer(ds12[[ds1.time.var[1]]] - ds12[[ds2.time.var[1]]]))
+    
+    if(!any(c(uns1, uns2))) return (list( ds12 ) )
+    
+        
+     #  if(any(uns1) != any(uns2)) {
+     #       
+     #    print(ds1b[, c('USUBJID',ds1.visit.var)])
+     #    print(ds2b[, c('USUBJID',ds2.visit.var)])
+     # #   stop('unscheduled visits are present in only 1 dataset')
+     #  }
+     #  
+      
+      
+      if(!any(uns1)) return( list( ds12, ds2b[uns2, ] ) ) # so none of unscheduled records from ds2 is matched
+
+      ds1b <- ds1b[uns1, ]
+      for (e in c(ds2.visit.var, ds2.vars,'gap_day')) ds1b[, e] <- NA
+      for (e in ds2.time.var) ds1b[, e] <- as.Date(NA)
+      
+      if(!any(uns2)) return(list(rbind(ds12, ds1b))) # add back unscheduled records from ds1 and return
+
+      ds2b <- ds2b[uns2, ]  
+      matched <- rep(NA, nrow(ds1b))
+    #  if(s == 'BO42592-30017') browser()
+      
+      for (i in 1:nrow(ds1b)) { # data source 1 is prioritized here, for each unscheduled visit from source 1, there is an attempt to find the closest match in source 2, even though the match could be far away.
+        
+        min1 <- as.Date( apply(ds1b[i,ds1.time.var,drop=F], 1, min) )
+        max1 <- as.Date( apply(ds1b[i,ds1.time.var,drop=F], 1, max) )
+        min2 <- as.Date( apply(ds2b[ ,ds2.time.var,drop=F], 1, min) )
+        max2 <- as.Date( apply(ds2b[ ,ds2.time.var,drop=F], 1, max) )
+        
+        diff_day <- pmin( abs( as.integer( min1 - min2 )),
+                          abs( as.integer( min1 - max2 )),
+                          abs( as.integer( max1 - min2 )),
+                          abs( as.integer( max1 - max2 )) 
+                          )
+        
+        m1 <- which.min(diff_day) 
+        
+        if(length(m1) != 1){
+          print('ds1 records with no close match in ds2')
+          print( ds1b[i, c('USUBJID',ds1.visit.var, ds1.time.var)] )
+    
+        }else{
+        
+          for (e in c(ds2.time.var, ds2.visit.var, ds2.vars)) ds1b[i, e] <-  ds2b[m1, e]
+          
+          ds1b[i, 'gap_day'] <- diff_day[m1]
+          matched[i] <- m1
+        }
+      }
+      
+     # if(s ==  'BO42592-30389') browser()
+      
+      list(rbind(ds12, ds1b), ds2b[-matched[!is.na(matched)],,drop=F] )
+    } )
+  
+  matched <- do.call(rbind, lapply(dsL, function(l) l[[1]]))
+  
+  stopifnot(  !any(duplicated( apply(matched[, c('USUBJID', ds1.visit.var)], 1, paste, collapse=','))))
+  
+  list( matched= matched, 
+  
+  leftover_source2 =   do.call(rbind, lapply(dsL, function(l) {
+    if(length(l) == 2) {
+      l[[2]]
+    }else{
+      NULL
+    }
+    })) ,   subject_not_Match =  v[ !(v[,1] & v[,2]),]
+  )
+  
+  
+  # the function returns 3 elements
+  # matched: matched recources by USUBJID and visit.var from source 1 (ds1.visit.var) and source 2 (ds1.visit.var)
+  # leftover_source2: data source2 that are not matched
+  # subject_no_Match: 
+}
+```
+
+#  lesion IDs
+
+* target lesion: present or not; 2 max per organ
+
+* non-target lesion: present or not
+
+* new lesions: often remains once appears
+
+```{r, echo=F}
+tu1 <- subset(tu, TUEVAL %in%  'INVESTIGATOR' & TUTEST %in% 'Tumor Identification' &    TUORRES %in% c('NON-TARGET','TARGET') ) # target / non target lesions from investigor
+
+tu1_target <- subset(tu1,  TUORRES %in% 'TARGET')
+tu1_nt <- subset(tu1,  TUORRES %in% 'NON-TARGET')
+# add checks on the target lesions
+
+tu_new <- subset(tu, TUEVAL %in%  'INVESTIGATOR' & TUTEST %in% 'Tumor Identification' & TUORRES %in% 'NEW')
+# this way of filter gets rid of records from the new lesion assessment form, as their TUORRES will be either 'NEW NON-TARGET' 'NEW TARGET'
+
+tu_new$TUDTC <- as.Date(tu_new$TUDTC)
+# the date associated with new lesion is missing, however, the date associated with RRSP1 is not (and the new lesion form should be triggered by the rrsp field
+tu_new[with(tu_new, USUBJID %in% 'BO42592-30186' & VISIT %in% 'UNSCHEDULED'),'TUDTC'] <- as.Date('2023-06-10')
+
+
+with(tu1, stopifnot(!any(duplicated(paste(USUBJID, TULNKID)))))
+
+
+tu2_target <- with(subset(tu1, TUORRES %in% 'TARGET'), as.data.frame( table(USUBJID))); row.names(tu2_target) <- as.character(tu2_target$USUBJID)
+
+
+tu2_nt <- with(subset(tu1, TUORRES %in% 'NON-TARGET'), as.data.frame( table(USUBJID)) ); row.names(tu2_nt) <- as.character(tu2_nt$USUBJID)
+
+
+tu2_new <-  ddply(tu_new, .(USUBJID), function(d) { # get the first date when new lesion appears
+  d <- d[order(d$TUDTC), ]
+  d[1, ]
+  
+  })
+
+stopifnot(all(sort(unique(tu_new$USUBJID)) == sort(tu2_new$USUBJID)))
+
+stopifnot(!any(duplicated(tu2_new$USUBJID)))
+row.names(tu2_new) <- as.character(tu2_new$USUBJID) 
+
+patient_list <- unique(tu$USUBJID)
+
+patient_tu <- data.frame( TARGET = tu2_target[patient_list,'Freq'], 
+                                NT = tu2_nt[patient_list, 'Freq'],
+                                NEW  = tu2_new[patient_list,'TUDTC'], stringsAsFactors = F)
+row.names(patient_tu) <- patient_list
+
+patient_tu$in_rrsp1 <- sapply(strsplit(patient_list, split='-'), function(x) tail(x, 1)) %in% with(subset(rrsp1,! RSPDN %in% 'No') , PATNUM)
+
+
+get_tumor_list <- function(d) {
+   dlply(d, .(USUBJID), function(d1) {
+     unique(d1$TULNKID)
+     })
+}
+
+targe_list <- get_tumor_list(subset(tu1, TUORRES %in% 'TARGET')) # list of target lesions
+
+# check patients with more than 5 target lesions
+moreThan5 <- sapply(targe_list, function(s) length(s) > 5)
+
+if(any(moreThan5)) print( targe_list[moreThan5] )
+
+nt_list <- get_tumor_list(subset(tu1, TUORRES %in% 'NON-TARGET'))
+
+
+kable( subset(patient_tu, is.na(TARGET)), caption = 'patients without target lesion')
+```
+
+Among `r length(patient_list)` patients with tumor data, there are `r sum(is.na(patient_tu$TARGET))` patients without target lesion; there are `r sum(is.na(patient_tu$NT))` patients without non-target lesions; there are `r sum(is.na(patient_tu$NEW))` patient without new lesions.
+
+
+# target lesion status
+
+
+```{r, echo=F}
+tr1 <- merge(
+  subset(tr, TRTEST %in% c('Longest Diameter', 'Longest Perpendicular') & TREVAL %in% 'INVESTIGATOR' ), 
+  tu1_target[, c('USUBJID','TULNKID','TUORRES','TULOC')], 
+  by.x=c('USUBJID','TRLNKID'),  by.y=c('USUBJID','TULNKID'), all=T) 
+
+with(subset(tr1, is.na(TUORRES)), stopifnot(all(TRGRPID %in%  'NEW')))
+
+
+#for (v in c('TRSEQ', 'TRSPID')) tr1[[v]] <- NULL
+
+tr2 <-  subset(tr1, ! ( TRORRES %in% c('ND','TOO SMALL TO MEASURE') | is.na(TUORRES)))  
+
+#=========================study specific adjustment
+# manually change lesion # for 30013: one of the lesion 2 should be lesion 3, there seems no way to fix this error
+ 
+tr2_30013 <- ddply( subset(tr2, USUBJID == 'BO42592-30013'), .(VISIT), function(d1){
+  d1$TRLNKID <- ifelse(duplicated(d1$TRLNKID),'INV-T003', d1$TRLNKID)
+  d1
+  })
+
+tr2 <- rbind( tr2_30013, subset(tr2, ! USUBJID %in% 'BO42592-30013'))
+ 
+#==============================================
+
+# adjust the visit variable: this is necessary because 'UNSCHEDULED' visits may be mixed together
+
+adjust_visit <- function(d, tlist=targe_list, tid.var='TRLNKID', unschedule_condition = 'VISIT %in% "UNSCHEDULED"', testcd_for_missing_lesion = 'LDIAM') {
+  stopifnot(all(c('USUBJID','VISIT') %in% colnames(d)))
+  stopifnot(! 'visit2' %in% colnames(d))
+  
+  d_b <- ddply(d, .(USUBJID, VISIT), function(d1){
+    s <- unique(d1$USUBJID)
+    stopifnot(s %in% names(tlist))
+      
+    d1$visit2 <- d1$VISIT
+      
+     # simple logic to manipulate the visit name. it may fail easiy. we need further check
+    if(with(d1, all(eval(parse(text = unschedule_condition))))) {
+      if ( nrow(d1) > length(tlist[[s]]) || any(duplicated(d1[[tid.var]])) ) {
+        d1$visit2 <- with(d1, paste(VISIT, TRDTC))
+        print(paste('concatenating VISIT and DTC for',s,'at', unique(d1$VISIT)))
+      }
+    }
+    
+    d1
+  })
+    
+    
+  ddply(d_b, .(USUBJID, visit2), function(d1){
+      s <- unique(d1$USUBJID)
+
+    if(!all(tlist[[s]] %in% d1[[tid.var]])) { # add records to cover missing target lesions
+      print(d1[, c('USUBJID','visit2',tid.var)])
+      
+      to_add <- setdiff( tlist[[s]], d1[[tid.var]])
+      d2 <- data.frame( unique(d1$USUBJID), unique(d1$visit2), to_add, testcd_for_missing_lesion, stringsAsFactors = F)
+      colnames(d2) <- c('USUBJID','visit2', tid.var,'TRTESTCD')
+      
+      d1 <- rbind.fill(d1, d2)
+      
+      print( paste('adding emtpy rows for', paste(to_add, collapse=',')))
+      
+    }
+      
+      # delete duplicated lesions within each visit
+      dup1 <- duplicated(d1[[tid.var]])
+      if(any(dup1)) {
+        print('removing duplicated records')
+        print(d1[dup1, c('USUBJID','visit2',tid.var)])
+        d1 <- d1[!dup1, ]
+      }
+      
+      # check again
+      
+      if( ! ( length(d1[[tid.var]]) == length(tlist[[s]]) && 
+             all(sort(d1[[tid.var]]) == sort(tlist[[s]])) ) ) {
+        print('the simple algorithm to separate multiple unscheduled visit failed')
+        print(d1[,c('USUBJID','visit2',tid.var)])
+      }
+      
+      d1 
+    })
+           
+    
+
+}
+
+
+tr2 <- adjust_visit (tr2)
+
+# records with TUORRES is missing are for new lesions
+# those 'TOO SMALL TO MEASURE' records are stacked with actual measurement; 
+
+# some records appear identical except some variables (set to NULL above)
+
+tr3 <- dcast(tr2 , USUBJID + TRLNKID + TULOC +   visit2 + TRDTC  ~ TRTESTCD, value.var='TRSTRESN') 
+
+tr3$TRDTC <- as.Date(tr3$TRDTC)
+
+# we won't have both long and short diamater available
+with(tr3, stopifnot( all( is.na(LDIAM)  + is.na(LPERP) >0 ))) # LDIAM: long diamater; LPERP: short diamater
+
+table(tr3$TRLNKID) # verify that all lesions are target lesions from investigors
+
+print('nodal lesions are not equivalent to LOC="LYMPH NODE"')
+with(subset(tr3, !is.na(TULOC)), print( table(
+  ifelse(TULOC %in%  'LYMPH NODE', 'LYMPH NODE','Other'), 
+  ifelse(is.na(LDIAM), 'with short diameter','with long diameter'), useNA = 'ifany')) )
+
+# derive SLD
+
+sld <- ddply( tr3, .(USUBJID, visit2), function(d) {
+  value <- with(d, ifelse( is.na(LDIAM), LPERP, LDIAM))
+  lesion_cr <- with(d, ifelse( is.na(LDIAM), LPERP <10, LDIAM==0))
+  d$sld <- sum( value , na.rm =F)
+  d$target_cr <- all(lesion_cr)
+  
+  d$early_date_target <- with(subset(d, !is.na(value)), min(TRDTC), na.rm=T) # so excluding missing
+  d$late_date_target <- with(subset(d, !is.na(value)), max(TRDTC), na.rm=T)
+  
+  d[1, c('USUBJID','visit2',   'target_cr', 'sld','early_date_target','late_date_target')]
+  })
+  
+
+
+print('summary of the gap in tumor assessment day from the same visit')
+with(sld, summary(as.integer(late_date_target - early_date_target)))
+
+print('visits with missing target lesion assessment date') 
+print( subset(sld, is.na(as.integer(late_date_target - early_date_target ))) )
+
+ kable( subset(sld, late_date_target - early_date_target >5), caption = 'visits spanning more than 5 days', row.names=F)
+
+```
+
+```{r change date, echo=F}
+if(F){
+sld_30154 <- subset(sld, USUBJID %in% 'BO42592-30154')
+sld_30539 <- subset(sld, USUBJID %in% 'BO42592-30539')
+
+sld_30154[grep('TUMOR ASSESSMENT WEEK 120', sld_30154$visit2), 'early_date_target'] <- as.Date('2023-12-13') 
+sld_30154[grep('TUMOR ASSESSMENT WEEK 120', sld_30154$visit2), 'early_date_target'] <- as.Date('2023-12-13')
+
+sld <- rbind(subset(sld, !USUBJID %in% 'BO42592-30154'), sld_30154) 
+
+ 
+
+sld_30539[grep('TUMOR ASSESSMENT WEEK 18', sld_30539$visit2),'early_date_target'] <- as.Date('2024-01-09')
+sld_30539[grep('TUMOR ASSESSMENT WEEK 18', sld_30539$visit2),'late_date_target'] <- as.Date('2024-01-09')
+sld <- rbind(subset(sld, !USUBJID %in% 'BO42592-30539'), sld_30539) 
+
+}
+
+sld <- sld[with(sld, order(USUBJID, early_date_target, late_date_target)), ]
+
+
+```
+             
+
+```{r, echo=F}
+# derive change of SLD from baseline or nadir ; derive target lesion response
+
+targetResp <- ddply(sld, .(USUBJID), function(d, baselineCondition = 'visit2 %in% "SCREENING"'){
+  
+  if(nrow(d) ==1) return(d)
+  
+  sel_baseline <- with(d, eval(parse(text = baselineCondition)))
+  if(sum(sel_baseline) != 1 || !(sel_baseline[1])) {
+        print(d)
+    stop('cannot find one baseline SLD record')
+  }
+ 
+   
+  
+ d$base <-   d[ sel_baseline , 'sld']
+ d$nadia <- NA
+ 
+ for (i in  2:nrow(d) ){ # cycle through non baseline, assuming 1st line is baseline
+   prev_sld <- d[1:(i-1),'sld'] 
+   d[i, 'nadia'] <- ifelse(all(is.na(prev_sld)), NA, min(prev_sld, na.rm=T))
+ }
+ d$chg_base <- ( d$sld - d$base ) / d$base
+ d$chg_nadia <- (d$sld - d$nadia) / d$nadia
+ d$abs_inc <- pmax( d$sld - d$base, d$sld - d$nadia)
+ 
+ d$targetResp <- with(d,ifelse(is.na(chg_base), 'NE', 
+                        ifelse(target_cr, 'CR', 
+                        ifelse(pmax(chg_base,chg_nadia) > .2 & abs_inc >=5 ,'PD',
+                        ifelse(chg_base  < -.3,'PR',  'SD')))))
+ 
+ if(any(is.na(d$USUBJID))) {
+   print(d)
+   stop()
+ }
+ 
+ d
+ 
+ 
+  })
+
+
+with(targetResp, stopifnot(!any(is.na(early_date_target))))
+
+```
+
+```{r, echo=F}
+
+with(subset(rs, RSEVAL %in% 'INVESTIGATOR'), stopifnot(!any(duplicated(paste(USUBJID, VISIT, RSTESTCD, RSDTC)))))
+
+rs$RSDTC <- as.Date(rs$RSDTC)
+
+
+ 
+#rave_resp <- dcast( subset(rs, RSTESTCD %in% c('NTRGRESP','OVRLRESP','TRGRESP' ) & RSEVAL %in% 'INVESTIGATOR'), USUBJID + VISIT  ~ RSTESTCD, value.var= 'RSSTRESC')
+
+  
+  
+ comp1 <- approx_merge()
+  
+ missed_pt_target <- subset(rs, RSTESTCD %in% c('TRGRESP') & RSEVAL %in% 'INVESTIGATOR' & USUBJID %in% row.names(comp1$subject_not_Match)[comp1$subject_not_Match[, 2]])
+ 
+ with(missed_pt_target  , stopifnot(all(RSSTRESC %in% c('NA','NE'))))
+ 
+  kable(missed_pt_target[, c('USUBJID', 'VISIT','RSSTRESC')], caption = 'patient missed in wei target response derivation', row.names=F)
+      
+  kable( subset(patient_tu, is.na(TARGET)), row.names =T, caption ='patients without target lesion from ttn1')
+ 
+
+  
+    
+  kable( subset(comp1$leftover_source2, !RSSTRESC %in%  'NE', select=c('USUBJID','VISIT','RSDTC','RSTEST', 'RSSTRESC')), row.names=F, caption = 'RRSP1 records assessing target lesions that are missed by Wei')
+  
+  #stopifnot(all(sort(unique(comp1$matched$USUBJID)) == sort(common_subj)))
+
+  print('response is NE or NA from wei, but there is a valid response from rrsp1')
+  print( subset(comp1$matched, is.na(gap_day)  & ! RSSTRESC %in% c(NA,'NA','NE'))) # when gap_day is missing, the most common reason is that targetResp (wei derivation) is missing
+  
+  if(F) { # this problem has been fixed
+  kable( subset(tr, USUBJID %in% 'BO42592-30148' & VISIT %in% c('TUMOR ASSESSMENT WEEK 102','TUMOR ASSESSMENT WEEK 120') & TRGRPID %in% 'TARGET', select=c('USUBJID','TRSTRESN','TRORRES','TRDTC')), row.names=F, caption ='the 2 records from 30148 is filtered out: in TR domain,  records with TRORRES = "TOO SMALL TO MEASURE" generally contains no numerical values in this study' )
+  }
+  kable( subset(comp1$matched, gap_day >=40, select=c('USUBJID', 'visit2','early_date_target','late_date_target','RSDTC','gap_day')), row.names=F, caption ='dates from target lesion assessment and recist assessment are 40 days or more apart')
+  
+with(comp1$matched, table(RSSTRESC, targetResp, useNA = 'ifany')) 
+
+diff_target <- subset(comp1$matched, ( is.na(RSSTRESC) != is.na(targetResp) ) | ( !is.na(RSSTRESC) &  !is.na(targetResp) & RSSTRESC != targetResp ) ) 
+
+old_diff_target <- read.csv( '~/aTigit/sky06/reports/diff_target.csv', as.is=T) 
+
+vector_overlap(with(old_diff_target, paste(USUBJID,visit2)), with( diff_target, paste(USUBJID,visit2)))
+
+
+write.csv( subset( diff_target, ! paste(USUBJID,visit2) %in% with(old_diff_target, paste(USUBJID,visit2)),  select=c('USUBJID','visit2','RSSTRESC', 'sld','early_date_target',	'late_date_target',	'base',	'nadia',	'chg_base',	'chg_nadia',	'targetResp') )
+, file = paste('~/aTigit/sky06/reports/diff_target_',date1,'.csv', sep=''), row.names=F)
+
+
+
+```
+
+# non-target status
+
+```{r, echo=F}
+ tr4_check <- merge(
+   subset(tr, TRTEST %in% c('Tumor State') & TREVAL %in% 'INVESTIGATOR' & TRCAT %in% 'CATEGORICAL' & TRGRPID %in% 'NON-TARGET'), 
+   tu1_nt[, c('USUBJID','TULNKID','TUORRES','TULOC')], 
+   by.x=c('USUBJID','TRLNKID'),  by.y=c('USUBJID','TULNKID'), all.x=T) # only left join, many non-target lesion IDs are not populated
+
+
+# all NON-PATHOLOGICAL should be from lymph node
+with(tr4_check, table(ifelse(TULOC %in% "LYMPH NODE", 'nodal','non-nodal'),
+                      ifelse(TRSTRESC %in% c('NON-PATHOLOGICAL'), 'node_cr','other'), useNA = 'ifany'))
+
+with(tr4_check, table(ifelse(TULOC %in% "LYMPH NODE", 'nodal','non-nodal'),
+                      ifelse(TRSTRESC %in% c('ABSENT'), 'non-node_cr','other'), useNA = 'ifany'))
+
+
+tr4 <- subset(tr, TRTEST %in% c('Tumor State') & TREVAL %in% 'INVESTIGATOR' & TRCAT %in% 'CATEGORICAL' & TRGRPID %in% 'NON-TARGET') 
+
+# adjust the visit variable for non-target lesions: this is necessary because 'UNSCHEDULED' visits may be mixed together
+
+# a less strict checking on lesion ID here (it seems many non-target lesions are not populated
+
+adjust_visit_nt <- function(d, tlist=targe_list, tid.var='TRLNKID', unschedule_condition = 'VISIT %in% "UNSCHEDULED"' ) {
+  stopifnot(all(c('USUBJID','VISIT') %in% colnames(d)))
+  stopifnot(! 'visit2' %in% colnames(d))
+  
+  d_b <- ddply(d, .(USUBJID, VISIT), function(d1){
+    s <- unique(d1$USUBJID)
+    stopifnot(s %in% names(tlist))
+      
+    d1$visit2 <- d1$VISIT
+      
+     # simple logic to manipulate the visit name. it may fail easiy. we need further check
+    if(with(d1, all(eval(parse(text = unschedule_condition))))) {
+      if ( nrow(d1) > length(tlist[[s]]) || any(duplicated(d1[[tid.var]])) ) {
+        d1$visit2 <- with(d1, paste(VISIT, TRDTC))
+        print(paste('concatenating VISIT and DTC for',s,'at', unique(d1$VISIT)))
+      }
+    }
+    
+    d1
+  })
+    
+    
+  ddply(d_b, .(USUBJID, visit2), function(d1){
+      s <- unique(d1$USUBJID)
+
+    if(length(tlist[[s]]) != nrow(d1) ) {
+        print(paste('the simple algorithm to separate multiple unscheduled visit failed'))
+        print(paste('the following NT lesions are expected', paste(tlist[[s]], collapse=',')))
+        print(d1[,c('USUBJID','visit2',tid.var)])
+      }
+      
+      d1 
+    })
+           
+    
+
+}
+
+
+
+tr4b <- adjust_visit_nt (tr4,tlist = nt_list )
+
+tr4b$TRDTC <- as.Date(tr4b$TRDTC)
+
+stopifnot(!any(is.na(tr4b$TRDTC))) 
+
+
+ 
+ntRespByVisit <- ddply(tr4b, .(USUBJID, visit2), function(d1, tlist = nt_list, ne_code = c(NA,'NOT ASSESSED')){
+  s <- d1[1,'USUBJID']
+  stopifnot(! s %in% tlist)
+  
+  d1$ntRespVisit <- with(d1, ifelse( any(TRSTRESC %in% 'UNEQUIVOCAL PROGRESSION'), 'PD',
+                        ifelse( any(TRSTRESC %in% ne_code) || nrow(d1) < length( d1$TRLNKID), 'NE',
+                        ifelse( all(TRSTRESC %in% c('NON-PATHOLOGICAL','ABSENT')),'CR', 'NON-CR/NON-PD'))))
+
+  d1$early_date_nt <- with(subset(d1, !TRSTRESC %in% ne_code), min(TRDTC), na.rm=T)  
+  d1$late_date_nt <- with(subset(d1, !TRSTRESC %in% ne_code), max(TRDTC), na.rm=T)
+    
+  d1[1,  c('USUBJID','visit2',   'ntRespVisit','early_date_nt','late_date_nt')] 
+  })
+
+ntRespByVisit  <- ntRespByVisit[with(ntRespByVisit , order(USUBJID, early_date_nt)), ]
+
+#subset(ntRespByVisit, is.infinite(early_date_target))
+
+ntResp <- ddply(ntRespByVisit, .(USUBJID), function(d){
+  if( any (d$ntRespVisit %in% 'CR')) { 
+  early_cr <- min(which(d$ntRespVisit %in% 'CR'))
+  for (i in 2:nrow(d)) {
+    if(i > early_cr & d[i,'ntRespVisit'] %in% 'NON-CR/NON-PD') d[i,'ntRespVisit'] <- 'PD'
+  }
+  }
+  d
+  })
+
+comp2 <- approx_merge (
+  ds1 = ntResp , 
+  ds2 = subset(rs, RSTESTCD %in% c('NTRGRESP') & RSEVAL %in% 'INVESTIGATOR'), 
+  ds1.time.var = c('early_date_nt','late_date_nt'), 
+  ds2.time.var='RSDTC', 
+  ds1.visit.var = 'visit2',
+  ds2.visit.var = 'VISIT',
+  ds2.vars =c('RSSTRESC')) 
+
+kable( subset(comp2$matched, USUBJID %in% 'BO42592-30115'), row.names=F, caption ='all non target assessment for BO42592-30115 in the matched non-target lesion data')
+
+kable( subset(comp2$matched, USUBJID %in% 'BO42592-30265'), row.names=F, caption ='all non target assessment for BO42592-30265 in the matched non-target lesion data')
+
+#======= check comparison
+
+ missed_pt_nt <- subset(rs, RSTESTCD %in% c('NTRGRESP') & RSEVAL %in% 'INVESTIGATOR' & USUBJID %in% row.names(comp2$subject_not_Match)[comp2$subject_not_Match[, 2]])
+ 
+ with(missed_pt_nt  , stopifnot(all(RSSTRESC %in% c('NA','NE'))))
+ stopifnot(all(sort(unique(missed_pt_nt$USUBJID)) == sort(setdiff(patient_list, names(nt_list))))) # so these patients do not have non-target lesions
+```
+
+```{r, echo=F}
+ 
+print('RRSP1 records assessing non-target leions that are missed by Wei')
+  print( subset(comp2$leftover_source2, !RSSTRESC %in%  'NE', select=c('USUBJID','VISIT','RSDTC','RSSTRESC'))  )
+  
+  #stopifnot(all(sort(unique(comp2$matched$USUBJID)) == sort(common_subj)))
+
+  print('response is NE or NA from wei, but there is a valid response from rrsp1')
+  print( subset(comp2$matched, is.na(gap_day)  & ! RSSTRESC %in% c(NA,'NA','NE'))) # when gap_day is missing, the most common reason is that targetResp (wei derivation) is missing
+  
+
+  kable( subset(comp2$matched, gap_day >=40, select=c('USUBJID', 'visit2','early_date_nt','late_date_nt','RSDTC', 'gap_day')), row.names=F, caption ='dates from non-target lesion assessment and recist assessment are 40 days or more apart')
+  
+
+#======
+
+with(comp2$matched, table(RSSTRESC, ntRespVisit, useNA = 'ifany'))
+
+
+diff_nt <- subset(comp2$matched, RSSTRESC != ntRespVisit  )
+
+old_diff_nt <- read.csv( '~/aTigit/sky06/reports/diff_nontarget.csv', as.is = T)
+
+
+vector_overlap(with(old_diff_nt, paste(USUBJID,visit2)), with( diff_nt, paste(USUBJID,visit2)))
+
+
+write.csv(subset( diff_nt, ! paste(USUBJID, visit2) %in% with(old_diff_nt, paste(USUBJID, visit2)), select= c('USUBJID','visit2','RSSTRESC', 'early_date_nt',	'late_date_nt',	'ntRespVisit')), file = paste('~/aTigit/sky06/reports/diff_nontarget_',date1,'.csv', sep = ''), row.names=F)
+
+```
+
+# new lesion
+
+```{r, echo=F}
+
+print('new lesions from RRSP1 and new lesion form are mapped together')
+print('in this study, new lesion from RRSP1 seems to trigger the new lesion form')
+with( subset(tu, grepl('NEW', TUORRES) & TUEVAL %in% 'INVESTIGATOR'), table(substring(TUSPID, 1,10)))
+
+if(F){
+  # new lesion from the new lesion assessment form
+new1 <- unique( subset(tu, grepl('NEW', TUORRES) & grepl('IRNLES', TUSPID), select=c('USUBJID', 'VISIT','TUDTC')) )
+
+kable(subset(new1, paste(USUBJID, VISIT ) %in% paste(USUBJID, VISIT )[duplicated(paste(USUBJID, VISIT ))]), row.names=F, caption ='Tumor Assessment New Lesions: duplicated USUBJID-Visit') 
+
+new1 <- new1[with(new1, !duplicated(paste(USUBJID, VISIT))), ]
+
+new2 <-  unique( subset(tu, grepl('NEW', TUORRES) & grepl('RRSP1', TUSPID), select=c('USUBJID', 'VISIT','TUDTC','TULNKID')) )
+new2$TUDTC <- as.Date(new2$TUDTC)
+
+}
+stopifnot(all( grepl('RRSP1', tu_new$TUSPID)))
+new2 <-  tu_new[,  c('USUBJID', 'VISIT','TUDTC','TULNKID')]
+
+
+with(new2, stopifnot(!any(duplicated(paste(USUBJID, VISIT, TUDTC)))))
+
+```
+
+# overall response
+
+```{r, echo=F}
+# checks based on response status from rrsp1 form
+
+resp1 <-   dcast(subset(rs,  RSEVAL %in% 'INVESTIGATOR' & RSTESTCD %in% c('TRGRESP','NTRGRESP','OVRLRESP')), USUBJID+ VISIT + RSDTC ~ RSTESTCD, value.var='RSSTRESC')
+
+resp1$visit2 <- with(resp1, ifelse(VISIT %in% "UNSCHEDULED", paste(VISIT, RSDTC), VISIT))
+resp1$VISIT <- NULL
+resp1$RSDTC2 <- resp1$RSDTC
+
+
+stopifnot( all(sort(unique(resp1$USUBJID)) == sort( row.names(patient_tu[patient_tu$in_rrsp1, ]))) )
+
+resp2a <- subset(resp1, ! USUBJID %in% new2$USUBJID)
+
+stopifnot( all(sort(unique( resp2a$USUBJID)) == sort( row.names(subset(patient_tu, is.na(NEW) & in_rrsp1))) ))
+ 
+
+# resp2b <- approx_merge (
+#   ds1 = subset(resp1, USUBJID %in% new2$USUBJID) , 
+#   ds2 = new2, 
+#   ds1.time.var = c('RSDTC','RSDTC2'), 
+#   ds2.time.var='TUDTC', 
+#   ds1.visit.var = 'visit2',
+#   ds2.visit.var = 'VISIT',
+#   ds2.vars =c('TULNKID')) 
+
+# I think we need reverse the order of data source 1 and source 2. The function tries to find a best match for every record in source 1
+
+new2$visit3 <- with(new2, ifelse(VISIT %in% "UNSCHEDULED", paste(VISIT, TUDTC), VISIT))
+
+resp2b <- approx_merge (
+  ds2 = subset(resp1, USUBJID %in% new2$USUBJID) , 
+  ds1 = new2, 
+  ds2.time.var = c('RSDTC','RSDTC2'), 
+  ds1.time.var='TUDTC', 
+  ds2.visit.var = 'visit2',
+  ds1.visit.var = 'visit3',
+  ds2.vars =c('NTRGRESP','OVRLRESP','TRGRESP')) 
+
+
+#stopifnot(nrow(resp2b$leftover_source2) == 0)
+stopifnot(nrow(resp2b$subject_not_Match) == 0)
+resp2b$matched <- subset(resp2b$matched, !is.na(TUDTC))
+
+stopifnot(all(sort(unique(resp2b$matched$USUBJID)) == sort( row.names(subset(patient_tu, !is.na(NEW) & in_rrsp1))) ))
+
+colnames(resp2b$matched) <- gsub('TULNKID','NEW', colnames(resp2b$matched))
+ resp2b$matched$visit2 <- NULL
+colnames(resp2b$matched) <- gsub('visit3','visit2', colnames(resp2b$matched)) 
+
+resp2 <-  rbind.fill(resp2b$matched[, c(colnames(resp2a), 'NEW')], resp2a)
+
+resp2$NEW <- ifelse(grepl('NEW', resp2$NEW),'Yes','No')
+
+ 
+  
+  resp2[ ,'overall'] <- ifelse( !is.na( patient_tu[resp2$USUBJID,'TARGET'] ), 
+                                        
+       with(resp2, case_when(
+          TRGRESP  %in% "PD" | NTRGRESP %in% "PD" | NEW %in% "Yes" ~ "PD",
+          TRGRESP %in% "CR" & NTRGRESP %in% "CR" & NEW %in% "No" ~ "CR",
+          TRGRESP %in% "CR" & NTRGRESP %in% "NA" & NEW %in% "No" ~ "CR",
+          TRGRESP %in% "CR" & toupper(NTRGRESP) %in% c("NON-CR/NON-PD", "NE") & NEW %in% "No" ~ "PR",
+          TRGRESP %in% "PR" & toupper(NTRGRESP) %in% c("CR", "NON-CR/NON-PD", "NE", "NA") & NEW %in% "No" ~ "PR",
+          TRGRESP %in% "SD" & toupper(NTRGRESP) %in% c("CR", "NON-CR/NON-PD", "NE", "NA") & NEW %in% "No" ~ "SD",
+          TRGRESP %in% "NE" & toupper(NTRGRESP) %in% c("CR", "NON-CR/NON-PD", "NE", "NA") & NEW %in% "No" ~ "NE",
+          TRGRESP %in% "NA" & toupper(NTRGRESP) %in% "NON-CR/NON-PD" & NEW %in% "No" ~ "NON-CR/NON-PD",
+          TRGRESP %in% "NA" & NTRGRESP %in% "CR" & NEW %in% "No" ~ "CR",
+          TRGRESP %in% "NA" & NTRGRESP %in% c("NE", "NA") & NEW %in% "No" ~ "NE",
+          TRUE ~ "NA"
+        )),
+       
+      with(resp2, case_when(
+          NTRGRESP %in% "PD" | NEW %in% "Yes" ~ "PD",
+          NTRGRESP %in% "CR" & NEW %in% "No" ~ "CR",
+          NTRGRESP %in% "NON-CR/NON-PD" & NEW %in% "No" ~ "NON-CR/NON-PD",
+          NTRGRESP %in% c("NE", "NA") & NEW %in% "No" ~ "NE",
+          TRUE ~ "NA"
+        ) )
+  )
+  
+
+#  print(as.data.frame(subset(resp2, USUBJID %in% 'BO42592-30186' & grepl('UNSCHEDULED', visit2))))
+  
+  with(resp2, print( table( overall, OVRLRESP, useNA ='ifany')) )
+  
+  old_resp <- read.csv(paste('~/aTigit/sky06/reports/diff_overall.csv', sep = ''), as.is = T)
+  
+  resp2 <-  subset(resp2, overall!= OVRLRESP)
+ 
+vector_overlap(with(old_resp, paste(USUBJID,visit2)), with( resp2, paste(USUBJID,visit2)))
+
+
+  
+  write.csv(subset(resp2, !paste(USUBJID, visit2) %in% with(old_resp, paste(USUBJID, visit2))) , file =   paste('~/aTigit/sky06/reports/diff_overall_', date1,'.csv', sep = ''), row.names=F)
+  
+```
+

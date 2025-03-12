@@ -32,6 +32,14 @@ rrsp1 <- as.data.frame( read_sas('/ocean/harbour/CDT70424/GO44010/DataReviewMonC
 analysis <- 'mar_2025'
 ```
 
+this feature from [the RECIST FAQ](https://recist.eortc.org/faq/the-definition-of-sd-a-clarification/#:~:text=In%20the%20main%20article%20on,sum%20diameters%20while%20on%20study.%E2%80%9D) was not implemented: 
+
+
+"A confirmed PR at a next visit is considered to be a continuing PR unless the criteria for PD are met – the subsequent response is not based on the change from baseline but the change from the nadir.
+
+For instance if the sum of longest diameters is 165 mm at baseline, 63 mm at week 8 and 65 mm at week 16, the target lesion response at week 16 is continued partial response."
+
+
 
 ```{r  functions, echo=F}
 
@@ -78,6 +86,7 @@ vector_overlap <- function(v1, v2, removeDup=T){
 
 # This function merge ds1 and ds2 by visit variables for regular visits; for unscheduled visit, the 2 data frames are merged by date. The date info in ds1 is a range.  The program will always match 2 records (each from one dataset) with the closest gap
 
+# for unscheduled visit,   for each record in ds1 will be forced to match a record in ds2, even their dates are very different
 
 approx_merge <- function(
   ds1 = subset(targetResp, ! visit2 %in% 'SCREENING') , 
@@ -98,7 +107,7 @@ approx_merge <- function(
   common_subj <- row.names(v[ v[,1] & v[,2], ])
   
   dsL <- lapply( common_subj, function(s){
- 
+  
     ds1b <- subset(ds1, USUBJID %in% s)
     ds2b <- subset(ds2, USUBJID %in% s)
     
@@ -135,6 +144,10 @@ approx_merge <- function(
       matched <- rep(NA, nrow(ds1b))
       
       for (i in 1:nrow(ds1b)) {
+        
+        # so for each record in ds1, the program will always try to find a record in ds2 that can match.
+        # a logic hole is that this may be not true, only a portion of record in ds1 that can be matched.
+        
         diff_day <- pmin( abs( as.integer( ds1b[i,ds1.time.var[1]] - ds2b[,ds2.time.var] )),
                           abs( as.integer( ds1b[i,ds1.time.var[2]] - ds2b[,ds2.time.var] )) )
         
@@ -713,6 +726,10 @@ with(new2, stopifnot(!any(duplicated(paste(USUBJID, VISIT, TUDTC)))))
 
 rederive overall response based on target / non target / new lesion status from the RECIST 1.1 form
 
+known bugs: when merging with new lesion data and there are unscheduled visits in both target/no target data and new lesion data, each new lesion record from unscheduled visit will be merged to all unscheduled visits from target/non target data. this cause a wrong report for GO44010-100028, UNSCHEDULED 2024-01-18
+
+
+
 ```{r, echo=F}
 
 
@@ -740,6 +757,9 @@ resp2b <- approx_merge (
   ds1.visit.var = 'visit2',
   ds2.visit.var = 'VISIT',
   ds2.vars =c('TULNKID')) 
+
+ 
+
 
 stopifnot(nrow(resp2b$leftover_source2) == 0)
 stopifnot(nrow(resp2b$subject_not_Match) == 0)

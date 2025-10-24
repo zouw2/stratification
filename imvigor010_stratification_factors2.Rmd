@@ -1,0 +1,84 @@
+---
+title: "analysis of imvigor010 in ctDNA +: how stratified and unstratified HR differs"
+author: "wei zou"
+date: "`r Sys.time()`"
+output: pdf_document
+---
+
+```{r, echo=F, include=F}
+#calculate HRs in PDL1 subgroups based on 010 data-------------------------------------------------------------------------
+library(rice)
+library(dplyr)
+library(knitr)
+
+
+library(survival)
+source('~/R/lib_2020/cox.table.r')
+
+rice_session(
+  {
+    
+ctdna <- rice_read("root/clinical_studies/RO5541267/CDT30006/WO29636/data_analysis/OS_Tracking_Cut/data/sdtmv/pf.sas7bdat") %>%
+  filter(PFTESTCD=='MRDSTAT')
+adtte <- rice_read("root/clinical_studies/RO5541267/CDT30006/WO29636/data_analysis/OS_Tracking_Cut/prod/outdata_vad/adtte.sas7bdat") 
+adsl <- rice_read("root/clinical_studies/RO5541267/CDT30006/WO29636/data_analysis/OS_Tracking_Cut/prod/outdata_vad/adsl.sas7bdat") 
+
+},
+  password = Sys.getenv("ENTIMICE_PASSWORD")
+)
+
+
+adtte$event <- ifelse(adtte$CNSR ==0, 1, 0)
+adtte$TRT01P <- factor(adtte$TRT01P,levels = c('OBSERVATION', 'ATEZOLIZUMAB (MPDL3280A) 1200 MG'))
+
+c1ctdna <- subset( ctdna , VISIT %in% c("CYCLE 1 DAY 1") , select=c( 'USUBJID','PFSTRESC')) 
+
+stopifnot(!any(duplicated(c1ctdna$USUBJID)))
+
+
+dfs_os <- merge( subset( adtte ,  PARAMCD  %in% c("OS",'DFS')  ), c1ctdna, by='USUBJID') 
+
+dfs_os2 <- merge(dfs_os, adsl[, c('USUBJID', grep('STRAT', colnames(adsl), value=T))])
+
+with(dfs_os, stopifnot(all(as.character(TRT01P) == TRT01A)))
+
+
+
+```
+
+ccod: `r unique(dfs_os$DCUTDT)`
+ 
+
+```{r, echo=F}
+
+strat1 <- function( strat_options = apply( expand.grid(list(c('STRAT2', NA), c('STRAT3', NA), c('STRAT6', NA) )), 1, function(x) {
+  paste(x[!is.na(x)], collapse= ',')
+  }), 
+d  ){
+
+l1 <-lapply(strat_options, function( s) {
+  if(nchar(s)) {
+    r1 <- cox.table3(data = d, tte='AVAL', cens='event', form= paste('TRT01P + strata(', s, ')' ))
+  }else{
+    r1 <- cox.table3(data = d, tte='AVAL', cens='event', form= paste('TRT01P' ))
+  }
+ 
+  r1 <- as.data.frame(r1)
+  r1$strat = s
+  r1
+}
+  )
+
+r2 <- do.call(rbind, l1)
+}
+
+dfs_res <- strat1( d =  subset(dfs_os2, PARAMCD %in% 'DFS' & PFSTRESC %in% 'POSITIVE'))
+
+os_res <- strat1( d =  subset(dfs_os2, PARAMCD %in% 'OS' & PFSTRESC %in% 'POSITIVE'))
+
+kable(dfs_res[, c('HR','P', 'strat')], row.names = F, caption ='DFS HR from different cox models')
+
+kable(os_res[, c('HR','P', 'strat')], row.names = F, caption ='OS HR from different cox models')
+
+
+```

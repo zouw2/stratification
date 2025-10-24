@@ -2,38 +2,43 @@
 title: "re-derive ORR"
 author: "wei zou"
 date: "`r Sys.time()`"
-
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = F)
-library(rice)
+ 
+library(haven)
 library(reshape2)
 library(plyr)
 library(dplyr)
 library(knitr)
 
-rice_session(
-  {
-   # asl <- as.data.frame(  rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/qa/outdata_vad/adsl.sas7bdat') )
-   # 
-    raw <- rice_read_zip('root/clinical_studies/RO7496353/CDT70424/GO44010/source/other/prod/GO44010_Daily_Extract_20240321071609.zip')
-   # 
-rs <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/rs.sas7bdat"))
-
-tu <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/tu.sas7bdat"))
-
-tr <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/tr.sas7bdat"))
-
  
-},
-password = Sys.getenv("ENTIMICE_PASSWORD")
-)
+    asl <- as.data.frame( read_sas('/ocean/harbour/CDT70424/GO44010/DataReviewMonComm_IMC_6th/prod_imc6th_v1/data/adam/adsl.sas7bdat') )
+   # 
+#    raw <- rice_read_zip('root/clinical_studies/RO7496353/CDT70424/GO44010/source/other/prod/GO44010_Daily_Extract_20240429125425.zip')
+   # 
+rs <- as.data.frame( read_sas("/ocean/harbour/CDT70424/GO44010/DataReviewMonComm_IMC_6th/prod_imc6th_v1/data/sdtmv/rs.sas7bdat"))
 
-outF <- '~/GO44010/results'
+tu <- as.data.frame( read_sas("/ocean/harbour/CDT70424/GO44010/DataReviewMonComm_IMC_6th/prod_imc6th_v1/data/sdtmv/tu.sas7bdat"))
 
-rrsp1 <- raw$rrsp1
+tr <- as.data.frame( read_sas("/ocean/harbour/CDT70424/GO44010/DataReviewMonComm_IMC_6th/prod_imc6th_v1/data/sdtmv/tr.sas7bdat"))
+
+  
+outF <- '~/Migration/GO44010/results'
+
+rrsp1 <- as.data.frame( read_sas('/ocean/harbour/CDT70424/GO44010/DataReviewMonComm_IMC_6th/prod_imc6th_v1/data/other/rrsp1.sas7bdat'))
+
+analysis <- 'mar_2025'
 ```
+
+this feature from [the RECIST FAQ](https://recist.eortc.org/faq/the-definition-of-sd-a-clarification/#:~:text=In%20the%20main%20article%20on,sum%20diameters%20while%20on%20study.%E2%80%9D) was not implemented: 
+
+
+"A confirmed PR at a next visit is considered to be a continuing PR unless the criteria for PD are met – the subsequent response is not based on the change from baseline but the change from the nadir.
+
+For instance if the sum of longest diameters is 165 mm at baseline, 63 mm at week 8 and 65 mm at week 16, the target lesion response at week 16 is continued partial response."
+
 
 
 ```{r  functions, echo=F}
@@ -81,6 +86,7 @@ vector_overlap <- function(v1, v2, removeDup=T){
 
 # This function merge ds1 and ds2 by visit variables for regular visits; for unscheduled visit, the 2 data frames are merged by date. The date info in ds1 is a range.  The program will always match 2 records (each from one dataset) with the closest gap
 
+# for unscheduled visit,   for each record in ds1 will be forced to match a record in ds2, even their dates are very different
 
 approx_merge <- function(
   ds1 = subset(targetResp, ! visit2 %in% 'SCREENING') , 
@@ -101,7 +107,7 @@ approx_merge <- function(
   common_subj <- row.names(v[ v[,1] & v[,2], ])
   
   dsL <- lapply( common_subj, function(s){
- 
+  
     ds1b <- subset(ds1, USUBJID %in% s)
     ds2b <- subset(ds2, USUBJID %in% s)
     
@@ -138,6 +144,10 @@ approx_merge <- function(
       matched <- rep(NA, nrow(ds1b))
       
       for (i in 1:nrow(ds1b)) {
+        
+        # so for each record in ds1, the program will always try to find a record in ds2 that can match.
+        # a logic hole is that this may be not true, only a portion of record in ds1 that can be matched.
+        
         diff_day <- pmin( abs( as.integer( ds1b[i,ds1.time.var[1]] - ds2b[,ds2.time.var] )),
                           abs( as.integer( ds1b[i,ds1.time.var[2]] - ds2b[,ds2.time.var] )) )
         
@@ -232,6 +242,7 @@ adjust_visit <- function(d, tlist=targe_list, tid.var='TRLNKID', unschedule_cond
       
       if( ! ( length(d1[[tid.var]]) == length(tlist[[s]]) && 
              all(sort(d1[[tid.var]]) == sort(tlist[[s]])) ) ) {
+    
         print('the simple algorithm to separate multiple unscheduled visit failed')
         print(d1[,c('USUBJID','visit2',tid.var)])
       }
@@ -279,6 +290,7 @@ adjust_visit_nt <- function(d, tlist=targe_list, tid.var='TRLNKID', unschedule_c
     if(length(tlist[[s]]) != nrow(d1) ) {
         print(paste('the simple algorithm to separate multiple unscheduled visit failed'))
         print(paste('the following NT lesions are expected', paste(tlist[[s]], collapse=',')))
+         
         print(d1[,c('USUBJID','visit2',tid.var)])
       }
       
@@ -348,9 +360,13 @@ row.names(patient_tu) <- patient_list
 patient_tu$in_rrsp1 <- sapply(strsplit(patient_list, split='-'), function(x) tail(x, 1)) %in% with(subset(rrsp1,! RSPDN %in% 'No') , Subject)
 
 
+write.csv(patient_tu, file= paste(outF,'/patient_tu', analysis,'.csv', sep = ''), row.names=F)
+
 get_tumor_list <- function(d) {
    dlply(d, .(USUBJID), function(d1) {
-     unique(d1$TULNKID)
+     u1 <- unique(d1$TULNKID)
+     stopifnot(length(u1) > 0)
+     u1
      })
 }
 
@@ -451,9 +467,10 @@ print( subset(sld, is.na(as.integer(late_date_target - early_date_target ))) )
 # manually change early_date_target, late_date_target if necessary
 # wrong dates will sort the records wrongly, and entirely mess up target response status
 
-# sld_30154 <- subset(sld, USUBJID %in% 'BO42592-30154')
-# sld_30539 <- subset(sld, USUBJID %in% 'BO42592-30539')
-# 
+# sld_100028 <- subset(sld, USUBJID %in% 'GO44010-100028')
+# sld_100040 <- subset(sld, USUBJID %in% 'GO44010-100040')
+# sld_100077 <- subset(sld, USUBJID %in% 'GO44010-100077')
+
 # sld_30154[grep('TUMOR ASSESSMENT WEEK 120', sld_30154$visit2), 'early_date_target'] <- as.Date('2023-12-13') 
 # sld_30154[grep('TUMOR ASSESSMENT WEEK 120', sld_30154$visit2), 'early_date_target'] <- as.Date('2023-12-13')
 # 
@@ -533,7 +550,7 @@ rs$RSDTC <- as.Date(rs$RSDTC)
  
  #with(missed_pt_target  , stopifnot(all(RSSTRESC %in% c('NA','NE'))))
  
-  kable(missed_pt_target[, c('USUBJID', 'VISIT','RSSTRESC')], caption = 'patient missed in wei target response derivation', row.names=F)
+  kable(missed_pt_target[, c('USUBJID', 'VISIT','RSDTC','RSSTRESC')], caption = 'patient missed in wei target response derivation', row.names=F)
       
   kable( subset(patient_tu, is.na(TARGET)), row.names =T, caption ='patients without target lesion from ttn1')
  
@@ -555,8 +572,11 @@ with(comp1$matched, table(RSSTRESC, targetResp, useNA = 'ifany'))
 
 diff_target <- subset(comp1$matched, ( is.na(RSSTRESC) != is.na(targetResp) ) | ( !is.na(RSSTRESC) &  !is.na(targetResp) & RSSTRESC != targetResp ) ) 
 
-write.csv(diff_target[, c('USUBJID','visit2','RSSTRESC', 'sld','early_date_target',	'late_date_target',	'base',	'nadia',	'chg_base',	'chg_nadia',	'targetResp')]
-, file = paste(outF,'diff_target.csv', sep = '/'), row.names=F)
+
+diff_target <- merge(asl[, c('USUBJID','ACTARM')], diff_target, by='USUBJID')
+
+write.csv(diff_target[, c('USUBJID','ACTARM','visit2','RSSTRESC', 'sld','early_date_target',	'late_date_target',	'base',	'nadia',	'chg_base',	'chg_nadia',	'targetResp')]
+, file = paste(outF,'/diff_target_', analysis,'.csv', sep = ''), row.names=F)
 
 ```
 
@@ -636,7 +656,7 @@ print(lapply(comp2, dim))
  missed_pt_nt <- subset(rs, RSTESTCD %in% c('NTRGRESP') & RSEVAL %in% c('','INVESTIGATOR') & USUBJID %in% row.names(comp2$subject_not_Match)[comp2$subject_not_Match[, 2]])
  
  if( with(missed_pt_nt  , !all(RSSTRESC %in% c('NA','NE')))) {
-   print ('patients without non-target lesion assessment')
+   print ('patients without matching non-target lesion assessment')
    print(subset(missed_pt_nt, !RSSTRESC %in% c('NA','NE'), select=c('USUBJID','VISIT','RSTESTCD','RSSTRESC')))
    
    
@@ -666,9 +686,11 @@ with(comp2$matched, table(RSSTRESC, ntRespVisit, useNA = 'ifany'))
 # the second part of logic [! (!all_nt_assessed & RSSTRESC  %in% 'NE')] may be removed
 diff_nt <- subset(comp2$matched, RSSTRESC != ntRespVisit & ! (!all_nt_assessed & RSSTRESC  %in% 'NE')  )
 
+diff_nt <- merge(asl[, c('USUBJID','ACTARM')], diff_nt, by='USUBJID')
 
-write.csv(diff_nt[, c('USUBJID','visit2','RSSTRESC', 'early_date_nt',	'late_date_nt',	'ntRespVisit')]
-, file = paste(outF,'diff_nontarget.csv', sep= '/'), row.names=F)
+
+write.csv(diff_nt[, c('USUBJID','ACTARM','visit2','RSSTRESC', 'early_date_nt',	'late_date_nt',	'ntRespVisit')]
+, file = paste(outF,'/diff_nontarget_', analysis,'.csv', sep= ''), row.names=F)
 
 ```
 
@@ -704,6 +726,10 @@ with(new2, stopifnot(!any(duplicated(paste(USUBJID, VISIT, TUDTC)))))
 
 rederive overall response based on target / non target / new lesion status from the RECIST 1.1 form
 
+known bugs: when merging with new lesion data and there are unscheduled visits in both target/no target data and new lesion data, each new lesion record from unscheduled visit will be merged to all unscheduled visits from target/non target data. this cause a wrong report for GO44010-100028, UNSCHEDULED 2024-01-18
+
+
+
 ```{r, echo=F}
 
 
@@ -731,6 +757,9 @@ resp2b <- approx_merge (
   ds1.visit.var = 'visit2',
   ds2.visit.var = 'VISIT',
   ds2.vars =c('TULNKID')) 
+
+ 
+
 
 stopifnot(nrow(resp2b$leftover_source2) == 0)
 stopifnot(nrow(resp2b$subject_not_Match) == 0)
@@ -775,7 +804,11 @@ resp2$NEW <- ifelse(grepl('NEW', resp2$NEW),'Yes','No')
   
   with(resp2, print( table( overall, OVRLRESP, useNA ='ifany')) )
   
-  write.csv( subset(resp2, overall!= OVRLRESP), file =   paste(outF, 'diff_overall.csv', sep = '/'), row.names=F)
+resp2 <- merge(asl[, c('USUBJID','ACTARM')], resp2, by='USUBJID')
+
+
+  
+  write.csv( subset(resp2, overall!= OVRLRESP), file =   paste(outF, '/diff_overall_', analysis,'.csv', sep = ''), row.names=F)
   
 ```
 

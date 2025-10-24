@@ -2,7 +2,6 @@
 title: "re-derive ORR"
 author: "wei zou"
 date: "`r Sys.time()`"
-
 ---
 
 ```{r setup, include=FALSE}
@@ -17,13 +16,13 @@ rice_session(
   {
    # asl <- as.data.frame(  rice_read('root/clinical_studies/RO7092284/CDT30310/BO42592/data_analysis/OS_IA1/qa/outdata_vad/adsl.sas7bdat') )
    # 
-    raw <- rice_read_zip('root/clinical_studies/RO7496353/CDT70424/GO44010/source/other/prod/GO44010_Daily_Extract_20240321071609.zip')
+    raw <- rice_read_zip('root/clinical_studies/RO7496353/CDT70424/GO44010/source/other/prod/GO44010_Daily_Extract_20240429125425.zip')
    # 
-rs <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/rs.sas7bdat"))
+rs <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_4th/data/sdtmv/rs.sas7bdat"))
 
-tu <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/tu.sas7bdat"))
+tu <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_4th/data/sdtmv/tu.sas7bdat"))
 
-tr <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_3rd/data/sdtmv/tr.sas7bdat"))
+tr <- as.data.frame( rice_read("root/clinical_studies/RO7496353/CDT70424/GO44010/data_analysis/IMC_4th/data/sdtmv/tr.sas7bdat"))
 
  
 },
@@ -533,7 +532,7 @@ rs$RSDTC <- as.Date(rs$RSDTC)
  
  #with(missed_pt_target  , stopifnot(all(RSSTRESC %in% c('NA','NE'))))
  
-  kable(missed_pt_target[, c('USUBJID', 'VISIT','RSSTRESC')], caption = 'patient missed in wei target response derivation', row.names=F)
+  kable(missed_pt_target[, c('USUBJID', 'VISIT','RSDTC','RSSTRESC')], caption = 'patient missed in wei target response derivation', row.names=F)
       
   kable( subset(patient_tu, is.na(TARGET)), row.names =T, caption ='patients without target lesion from ttn1')
  
@@ -636,7 +635,7 @@ print(lapply(comp2, dim))
  missed_pt_nt <- subset(rs, RSTESTCD %in% c('NTRGRESP') & RSEVAL %in% c('','INVESTIGATOR') & USUBJID %in% row.names(comp2$subject_not_Match)[comp2$subject_not_Match[, 2]])
  
  if( with(missed_pt_nt  , !all(RSSTRESC %in% c('NA','NE')))) {
-   print ('patients without non-target lesion assessment')
+   print ('patients without matching non-target lesion assessment')
    print(subset(missed_pt_nt, !RSSTRESC %in% c('NA','NE'), select=c('USUBJID','VISIT','RSTESTCD','RSSTRESC')))
    
    

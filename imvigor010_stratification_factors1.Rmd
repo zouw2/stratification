@@ -1,0 +1,170 @@
+---
+title: "analysis of imvigor010 in ctDNA +, how OS events accumulate"
+author: "wei zou"
+date: "`r Sys.time()`"
+output: pdf_document
+---
+
+```{r, echo=F, include=F}
+#calculate HRs in PDL1 subgroups based on 010 data-------------------------------------------------------------------------
+library(rice)
+library(dplyr)
+library(knitr)
+
+
+library(survival)
+library(gClinBiomarker)
+
+rice_session(
+  {
+    
+ctdna <- rice_read("root/clinical_studies/RO5541267/CDT30006/WO29636/data_analysis/OS_Tracking_Cut/data/sdtmv/pf.sas7bdat") %>%
+  filter(PFTESTCD=='MRDSTAT')
+adtte <- rice_read("root/clinical_studies/RO5541267/CDT30006/WO29636/data_analysis/OS_Tracking_Cut/prod/outdata_vad/adtte.sas7bdat") 
+adsl <- rice_read("root/clinical_studies/RO5541267/CDT30006/WO29636/data_analysis/OS_Tracking_Cut/prod/outdata_vad/adsl.sas7bdat") 
+
+},
+  password = Sys.getenv("ENTIMICE_PASSWORD")
+)
+
+
+adtte$event <- ifelse(adtte$CNSR ==0, 1, 0)
+adtte$TRT01P <- factor(adtte$TRT01P,levels = c('OBSERVATION', 'ATEZOLIZUMAB (MPDL3280A) 1200 MG'))
+
+c1ctdna <- subset( ctdna , VISIT %in% c("CYCLE 1 DAY 1") , select=c( 'USUBJID','PFSTRESC')) 
+
+stopifnot(!any(duplicated(c1ctdna$USUBJID)))
+
+
+dfs_os <- merge( subset( adtte ,  PARAMCD  %in% c("OS",'DFS')  ), c1ctdna, by='USUBJID') 
+
+dfs_os2 <- merge(dfs_os, adsl[, c('USUBJID', grep('STRAT', colnames(adsl), value=T))])
+
+with(dfs_os, stopifnot(all(as.character(TRT01P) == TRT01A)))
+
+
+
+```
+
+ccod: `r unique(dfs_os$DCUTDT)`
+
+# prevalence 
+
+```{r, echo=F}
+ for( v in grep('strat\\dNM', colnames(dfs_os2), ignore.case=T, value=T)) {
+   print( paste(v, ':', unique(dfs_os2[[v]]) ))
+ }
+
+dfs_os2$STRAT2 <- factor(dfs_os2$STRAT2,levels=c('POSITIVE','NEGATIVE'))
+dfs_os2$STRAT3 <- factor(dfs_os2$STRAT3, levels=c('PT3/PT4', '<PT2/PT2'))
+dfs_os2$STRAT6 <- factor(dfs_os2$STRAT6, levels = c('IC 0/1','IC 2/3'))
+
+
+dfs_os2$strataGroup <- apply(dfs_os2[, c('STRAT2','STRAT3','STRAT6')], 1, paste, collapse='|')
+
+forFreq <- subset( dfs_os2[!duplicated(dfs_os2$USUBJID), ], PFSTRESC %in% 'POSITIVE')
+
+vars <- c('STRAT2','STRAT3','STRAT6')
+feature.table <- data.frame(var=vars, 
+                            name = sapply(vars, function(x) unique(forFreq[[paste(x,'NM', sep ='')]])),
+              referLevel = sapply(vars, function(v) levels(forFreq[[v]])[1]),
+              targetLevel = sapply(vars, function(v) levels(forFreq[[v]])[2]),
+              freq = sapply( vars, function(v) {
+                r1 <- levels(forFreq[[v]])[2]
+                mean(as.character(forFreq[[v]]) == r1)
+              }) )
+
+
+kable(feature.table, caption ='stratification factors in impow010 ctDNA +', row.names=F, digits=2)
+
+t1 <- with( forFreq  , as.data.frame(table(STRAT2, STRAT3, STRAT6)))
+
+colnames(t1) <- gsub('Freq','Count', colnames(t1))
+t1$freq <- t1$Count / sum(t1$Count)
+
+kable(t1, digits=3, caption = paste('freq in', sum(t1$Count),'ctDNA+ patients'))
+
+
+
+```
+
+# DFS
+
+```{r, echo=F, results='asis' }
+
+
+
+prog1 <- function(dsIn) {
+c_node <- sapply(split(dsIn, paste(dsIn$TRT01P, dsIn$PFSTRESC )), function(d) {
+  c1 <- coxph( Surv(AVAL, event) ~ STRAT2  , data =   d)
+  cat("  \n")
+  print( paste('arm=',unique(d$TRT01P), 'ctDNA=', unique(d$PFSTRESC )))
+  print(c1)
+  return( paste( round(c1$coefficient,2), '(', c1$nevent,')'))
+  })
+
+c_stage <- sapply(split(dsIn, paste(dsIn$TRT01P, dsIn$PFSTRESC )), function(d) {
+  c1 <- coxph( Surv(AVAL, event) ~ STRAT3  , data =   d)
+  cat("  \n")
+  print( paste('arm=',unique(d$TRT01P), 'ctDNA=', unique(d$PFSTRESC )))
+  print(c1)
+  return( paste( round(c1$coefficient,2), '(', c1$nevent,')'))
+  })
+
+c_pdl1 <- sapply(split(dsIn, paste(dsIn$TRT01P, dsIn$PFSTRESC )), function(d) {
+  c1 <- coxph( Surv(AVAL, event) ~ STRAT6 , data =   d)
+  cat("  \n")
+  print( paste('arm=',unique(d$TRT01P), 'ctDNA=', unique(d$PFSTRESC )))
+  print(c1)
+  return( paste( round(c1$coefficient,2), '(', c1$nevent,')'))
+  })
+
+o1 <- t(cbind(c_node, c_stage, c_pdl1))
+
+colnames(o1) <- gsub('ATEZOLIZUMAB (MPDL3280A) 1200 MG','atezo', colnames(o1), fixed = T)
+colnames(o1) <- gsub('OBSERVATION','Obs', colnames(o1))
+colnames(o1) <- gsub('.STRAT2NEGATIVE','', colnames(o1), fixed = T)
+o1
+}
+
+
+dfs_prog <- prog1 (subset(dfs_os2, PARAMCD %in% 'DFS') )
+```
+
+\newpage
+
+```{r, echo=F, fig.height= 9, fig.width=8}
+
+kable(dfs_prog, caption ='prognostic effect for DFS by arm/ctDNA status (# event)' )
+
+print(PlotKM(data=subset(dfs_os2, PARAMCD %in% 'DFS' & TRT01P %in% 'OBSERVATION' & PFSTRESC %in% 'POSITIVE'), tte="AVAL",cen="event",
+main="DFS in ctDNA+, observation arm", trt="strataGroup"))
+
+
+```
+
+# OS
+
+```{r, echo=F, results='asis'}
+ 
+os_prog <- prog1 (subset(dfs_os2, PARAMCD %in% 'OS') )
+
+```
+
+
+
+```{r, echo=F}
+kable(os_prog, caption ='prognostic effect for OS by arm/ctDNA status (# event)',   digits=2)
+```
+
+\newpage
+
+```{r, echo=F,   fig.height= 9, fig.width=8}
+
+print(PlotKM(data=subset(dfs_os2, PARAMCD %in% 'OS' & TRT01P %in% 'OBSERVATION' & PFSTRESC %in% 'POSITIVE'), tte="AVAL",cen="event",
+main="OS in ctDNA+, observation arm", trt="strataGroup"))
+ 
+
+save(t1, dfs_prog, os_prog, file = "~/imvigor010_CSRFinal/libraries/prognostic_effects.Rdata", version=2)
+
+```
